@@ -260,6 +260,19 @@ export const METRIC = {
   backupOutcomes: 'yeonjae_backup_outcomes_total',
   restoreOutcomes: 'yeonjae_restore_outcomes_total',
   credentialRotations: 'yeonjae_credential_rotations_total',
+  /**
+   * Credential-free product surfaces (dependency status, preview, quality checks, export, batch).
+   *
+   * Every label these carry is a closed set (component name, state, rule severity, outcome), so the
+   * series stay bounded on an unauthenticated `/metrics` endpoint.
+   */
+  dependencyStatus: 'yeonjae_dependency_status_total',
+  previewOperations: 'yeonjae_preview_operations_total',
+  typographyFindings: 'yeonjae_typography_findings_total',
+  platformFindings: 'yeonjae_platform_format_findings_total',
+  exportPackages: 'yeonjae_export_packages_total',
+  batchOperations: 'yeonjae_batch_operations_total',
+  batchItems: 'yeonjae_batch_items_total',
 } as const;
 
 export const METRIC_HELP: Readonly<Record<string, string>> = {
@@ -310,4 +323,11 @@ export const METRIC_HELP: Readonly<Record<string, string>> = {
   [METRIC.backupOutcomes]: 'Local backup attempts by outcome.',
   [METRIC.restoreOutcomes]: 'Local restore drills by outcome.',
   [METRIC.credentialRotations]: 'Credential rotation events by kind and outcome.',
+  [METRIC.dependencyStatus]: 'Declared dependency states by component and state.',
+  [METRIC.previewOperations]: 'Regeneration-preview operations by verb and outcome.',
+  [METRIC.typographyFindings]: 'Deterministic typography findings by severity.',
+  [METRIC.platformFindings]: 'Offline platform-format findings by severity.',
+  [METRIC.exportPackages]: 'Deterministic export packages prepared, by outcome.',
+  [METRIC.batchOperations]: 'Bounded batch operations by operation and outcome.',
+  [METRIC.batchItems]: 'Batch items processed by operation and outcome.',
 };

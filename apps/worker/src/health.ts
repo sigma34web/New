@@ -13,7 +13,14 @@
  */
 import { createServer, type Server } from 'node:http';
 import { type LifecycleCoordinator } from '@yeonjae/domain';
-import { readiness, type Pool, type ReadinessReport } from '@yeonjae/db';
+import {
+  dependencyReport,
+  mergeReadiness,
+  readiness,
+  type DependencyReport,
+  type Pool,
+  type ReadinessReport,
+} from '@yeonjae/db';
 
 export interface WorkerHealthOptions {
   readonly pool: Pool;
@@ -37,14 +44,34 @@ export interface WorkerHealthServer {
 export async function workerReadiness(
   pool: Pool,
   lifecycle: LifecycleCoordinator,
-): Promise<{ ready: boolean; draining: boolean; report: ReadinessReport }> {
+): Promise<{
+  ready: boolean;
+  draining: boolean;
+  report: ReadinessReport;
+  dependencies: DependencyReport;
+}> {
   const report = await readiness(pool, { requireProviderMode: true });
+  /**
+   * Per-component states, reported alongside the checks.
+   *
+   * The worker names itself as `self`, so its own lifecycle (starting, running, draining) is reported
+   * as the `worker` component's state rather than inferred by a reader. A required component that is
+   * unavailable fails readiness through `mergeReadiness`; an optional one that is degraded or
+   * intentionally disabled does not, which is the distinction this surface previously could not make.
+   */
+  const dependencies = await dependencyReport({
+    db: pool,
+    self: 'worker',
+    lifecycle: lifecycle.current(),
+  });
+  const merged = mergeReadiness(report, dependencies);
   return {
     // Draining fails readiness even when every dependency is healthy: the process is on its way out
     // and must stop being given work, which is a different question from whether it is broken.
-    ready: report.ready && lifecycle.ready(),
+    ready: merged.ready && lifecycle.ready(),
     draining: !lifecycle.ready(),
     report,
+    dependencies,
   };
 }
 
@@ -88,10 +115,13 @@ export async function startWorkerHealthServer(
             // Names and statuses only; the detail strings come from the readiness module, which is
             // itself asserted to carry no credential or connection string.
             checks: verdict.report.checks,
+            // Same bounded shape: component name, state, code, requiredness and a safe explanation.
+            dependencies: verdict.dependencies.components,
+            degraded: verdict.dependencies.degraded,
           });
         } catch {
           // A readiness probe that throws must answer 503, not hang the probe.
-          send(503, { status: 'not_ready', checks: [] });
+          send(503, { status: 'not_ready', checks: [], dependencies: [] });
         }
         return;
       }
