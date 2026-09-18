@@ -37,6 +37,8 @@ import {
   rateLimitStatus as operatorRateLimitStatus,
   queryString,
   readiness,
+  dependencyReport,
+  mergeReadiness,
   requestJobControl,
   retrievalDiagnostics,
   revokeSession,
@@ -75,6 +77,7 @@ import {
 } from './export.js';
 import { requireVerb } from './verbs.js';
 import { registerResourceRoutes } from './resource-routes.js';
+import { registerProductRoutes } from './product-routes.js';
 import { contentHashOf } from '@yeonjae/prose';
 import type { LifecycleCoordinator } from '@yeonjae/domain';
 import {
@@ -392,10 +395,28 @@ export function buildApi(options: ApiOptions): FastifyInstance {
      * credential, no connection string and no tenant data (asserted in the db package's tests).
      */
     const report = await readiness(pool);
-    if (report.ready) {
+    /**
+     * Per-dependency states, merged into the verdict.
+     *
+     * `readiness()` stays the authority on schema and role state — that is the contract the load
+     * balancer was built on — and the dependency report ADDS per-component states with their declared
+     * requiredness. The verdict is the AND of the two, so this can only make readiness stricter: a
+     * required component that is unavailable now fails, and an optional one that is degraded or
+     * intentionally disabled reports `degraded` without taking the instance out of service.
+     */
+    const deps = await dependencyReport({
+      db: pool,
+      self: 'api',
+      lifecycle: lifecycle?.current() ?? 'running',
+      metrics,
+    });
+    const verdict = mergeReadiness(report, deps);
+    if (verdict.ready) {
       return {
-        status: report.degraded ? 'degraded' : 'ready',
+        status: verdict.degraded ? 'degraded' : 'ready',
         checks: report.checks,
+        // Names, states and safe explanations only: the same bounded shape the checks already use.
+        dependencies: deps.components,
       };
     }
     return reply.status(503).type(PROBLEM_CONTENT_TYPE).send({
@@ -406,6 +427,7 @@ export function buildApi(options: ApiOptions): FastifyInstance {
       code: 'INTERNAL_ERROR',
       request_id: _req.id,
       checks: report.checks,
+      dependencies: deps.components,
     });
   });
 
@@ -1896,6 +1918,19 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     audit,
     pageOf,
     headerOf,
+  });
+
+  // The credential-free product surfaces (dependency status, preview, quality checks, export
+  // preparation, batches) follow the same pattern and share the same helpers.
+  registerProductRoutes(app, {
+    pool,
+    scoped: (req) => scoped(pool, req),
+    inScope: (scope, fn) => inScope(pool, scope, fn),
+    projectOr404,
+    audit,
+    headerOf,
+    metrics,
+    lifecycle,
   });
 
   return app;

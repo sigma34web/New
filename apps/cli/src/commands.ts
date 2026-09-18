@@ -45,8 +45,26 @@ import {
   stateAt,
   thesaurusListing,
   withWorkspace,
+  acceptPreview,
+  BatchError,
+  cancelPreview,
+  createPreview,
+  dependencyReport,
+  discardPreview,
+  listPreviews,
+  PreviewError,
+  runBatch,
+  type ItemCode,
 } from '@yeonjae/db';
 import { acceptChapter, DeltaRejectedError } from '@yeonjae/canon';
+import {
+  checkPlatformFormat,
+  checkTypography,
+  PLATFORM_PROFILES,
+  PlatformProfileError,
+  resolveProfile,
+  typographySummary,
+} from '@yeonjae/prose';
 import { compileBlock, composeIdentity, ProfileStore, type RoleVariant } from '@yeonjae/narrative';
 import { PromptRegistry } from '@yeonjae/prompts';
 import {
@@ -67,6 +85,8 @@ import {
 import { loadPolicies as loadPolicyMap, type PolicyRef } from '@yeonjae/domain';
 import {
   exportAccepted,
+  ExportRefusedError,
+  prepareExport,
   produceChapter,
   workflowIdFor,
   workflowStatus,
@@ -669,6 +689,264 @@ export async function runDb(argv: readonly string[]): Promise<AsyncCommandResult
           throw err;
         }
       }
+      /**
+       * The credential-free product commands.
+       *
+       * Every one of them calls the SAME service layer the API routes call: `dependencyReport`,
+       * `createPreview`, `checkTypography`, `checkPlatformFormat`, `prepareExport` and `runBatch`. A
+       * CLI that re-implemented any of those rules would be a second place for them to be wrong.
+       */
+      case 'ops:dependencies': {
+        const report = await dependencyReport({ db: pool, self: 'api' });
+        return {
+          // A required dependency that is down is a non-zero exit, so a script can gate on it.
+          ok: report.ready,
+          output: {
+            ready: report.ready,
+            degraded: report.degraded,
+            draining: report.draining,
+            totals: report.totals,
+            components: report.components,
+          },
+        };
+      }
+      case 'preview:create': {
+        const [projectId, chapterNo, ...restArgs] = rest;
+        if (!projectId || !chapterNo) return { ok: false, output: USAGE };
+        const instruction =
+          restArgs.find((f) => f.startsWith('--instruction='))?.slice('--instruction='.length) ??
+          'tighten the pacing';
+        const key =
+          restArgs.find((f) => f.startsWith('--key='))?.slice('--key='.length) ??
+          `cli:${projectId}:${chapterNo}:${instruction}`;
+        const project = await getProject(pool, projectId);
+        try {
+          const result = await withWorkspace(pool, project.workspace_id, (c) =>
+            createPreview(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              chapterNo: Number(chapterNo),
+              instruction,
+              requestKey: key,
+            }),
+          );
+          return {
+            ok: true,
+            output: {
+              preview: result.preview,
+              duplicate: result.duplicate,
+              proposed_text: result.proposed_text,
+            },
+          };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'preview:list': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const limit = Number(
+          flags.find((f) => f.startsWith('--limit='))?.slice('--limit='.length) ?? '20',
+        );
+        const project = await getProject(pool, projectId);
+        const listing = await withWorkspace(pool, project.workspace_id, (c) =>
+          listPreviews(c, { projectId, limit: Number.isFinite(limit) ? limit : 20 }),
+        );
+        return { ok: true, output: listing };
+      }
+      case 'preview:accept':
+      case 'preview:discard': {
+        const [projectId, previewId] = rest;
+        if (!projectId || !previewId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          if (cmd === 'preview:accept') {
+            const result = await acceptPreview(
+              pool,
+              (fn) => withWorkspace(pool, project.workspace_id, fn),
+              { previewId, projectId },
+            );
+            return { ok: true, output: result };
+          }
+          const view = await withWorkspace(pool, project.workspace_id, (c) =>
+            discardPreview(c, { previewId, projectId }),
+          );
+          return { ok: true, output: { preview: view } };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'preview:cancel': {
+        const [projectId, previewId] = rest;
+        if (!projectId || !previewId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const view = await withWorkspace(pool, project.workspace_id, (c) =>
+            cancelPreview(c, { previewId, projectId }),
+          );
+          return { ok: true, output: { preview: view } };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'quality:typography': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const chapterFlag = flags
+          .find((f) => f.startsWith('--chapter='))
+          ?.slice('--chapter='.length);
+        const project = await getProject(pool, projectId);
+        const accepted = await exportAccepted(pool, {
+          projectId,
+          chapters: chapterFlag === undefined ? undefined : [Number(chapterFlag)],
+          format: 'text',
+          title: project.title,
+        });
+        const chapters = (
+          await Promise.all(
+            accepted.chapters.map(async (chapter) => ({
+              chapter_no: chapter.chapter_no,
+              ...typographySummary(
+                checkTypography(await chapterBodyOf(pool, projectId, chapter.chapter_no)),
+              ),
+            })),
+          )
+        ).sort((a, b) => a.chapter_no - b.chapter_no);
+        const passed = chapters.every((c) => c.passed);
+        return {
+          ok: passed,
+          output: {
+            project_id: projectId,
+            chapters,
+            passed,
+            does_not_replace: 'bilingual human review',
+          },
+        };
+      }
+      case 'quality:platform-format': {
+        const [projectId, platformId, rulesVersion, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const profile = resolveProfile(platformId ?? 'generic', rulesVersion ?? '1.0');
+          const accepted = await exportAccepted(pool, {
+            projectId,
+            format: 'text',
+            title: project.title,
+          });
+          const result = checkPlatformFormat(profile, {
+            metadata: { title: project.title },
+            chapters: await Promise.all(
+              accepted.chapters.map(async (c) => ({
+                chapter_no: c.chapter_no,
+                text: await chapterBodyOf(pool, projectId, c.chapter_no),
+              })),
+            ),
+            manifestFields: [
+              'manifest_version',
+              'project_id',
+              'chapters',
+              'content_hash',
+              'external_identifier',
+            ],
+            identifier: flags
+              .find((f) => f.startsWith('--identifier='))
+              ?.slice('--identifier='.length),
+            totalBytes: Buffer.byteLength(accepted.text),
+          });
+          return { ok: result.passed, output: result };
+        } catch (err) {
+          if (err instanceof PlatformProfileError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'quality:profiles': {
+        return {
+          ok: true,
+          output: {
+            profiles: PLATFORM_PROFILES.map((p) => ({
+              platform_id: p.platform_id,
+              rules_version: p.rules_version,
+              display_name: p.display_name,
+            })),
+          },
+        };
+      }
+      case 'export:package': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        const outputDir = flags.find((f) => f.startsWith('--out='))?.slice('--out='.length);
+        try {
+          const prepared = await prepareExport(pool, {
+            projectId,
+            title: project.title,
+            metadata: { title: project.title },
+            platformId:
+              flags.find((f) => f.startsWith('--platform='))?.slice('--platform='.length) ??
+              'generic',
+            rulesVersion:
+              flags.find((f) => f.startsWith('--rules='))?.slice('--rules='.length) ?? '1.0',
+            identifier: flags
+              .find((f) => f.startsWith('--identifier='))
+              ?.slice('--identifier='.length),
+            outputDir,
+          });
+          return {
+            ok: true,
+            output: {
+              manifest: prepared.manifest,
+              logical_hash: prepared.logical_hash,
+              written_to: prepared.written_to,
+              total_bytes: prepared.total_bytes,
+              files: prepared.files.map((f) => ({ path: f.path, hash: f.hash })),
+              // Stated in the output: preparing an export never publishes it.
+              published: false,
+            },
+          };
+        } catch (err) {
+          if (err instanceof ExportRefusedError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'batch:run': {
+        const [projectId, operation, refs, ...flags] = rest;
+        if (!projectId || !operation || !refs) return { ok: false, output: USAGE };
+        const items = refs
+          .split(',')
+          .map((r) => r.trim())
+          .filter((r) => r !== '')
+          .map((ref) => ({ ref, projectId }));
+        const key =
+          flags.find((f) => f.startsWith('--key='))?.slice('--key='.length) ??
+          `cli:batch:${projectId}:${operation}:${refs}`;
+        const project = await getProject(pool, projectId);
+        try {
+          const result = await withWorkspace(pool, project.workspace_id, (c) =>
+            runBatch(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              operation,
+              requestKey: key,
+              items,
+              run: cliItemRunner(pool, operation, project.title),
+            }),
+          );
+          return { ok: result.status === 'completed', output: result };
+        } catch (err) {
+          if (err instanceof BatchError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
       case 'chapter:resume': {
         const [workflowId, ...flags] = rest;
         if (!workflowId) return { ok: false, output: USAGE };
@@ -1148,7 +1426,80 @@ export const DB_COMMANDS = new Set([
   'operator:embedding-rollback',
   'operator:thesaurus-add',
   'operator:thesaurus-set-active',
+  'ops:dependencies',
+  'preview:create',
+  'preview:list',
+  'preview:accept',
+  'preview:discard',
+  'preview:cancel',
+  'quality:typography',
+  'quality:platform-format',
+  'quality:profiles',
+  'export:package',
+  'batch:run',
 ]);
+
+/**
+ * One chapter's ACCEPTED text.
+ *
+ * Resolved through `acceptedChapter` rather than by splitting the assembled export document on its
+ * heading markers: prose that itself contains `Chapter N` would truncate the body there, and a check
+ * over a truncated chapter is a check that passed for the wrong reason.
+ */
+export async function chapterBodyOf(
+  pool: Pool,
+  projectId: string,
+  chapterNo: number,
+): Promise<string> {
+  const lookup = await acceptedChapter(pool, projectId, chapterNo);
+  return lookup.state === 'accepted' ? lookup.chapter.version.text : '';
+}
+
+/**
+ * The per-item work the CLI's batch runner performs.
+ *
+ * Deliberately identical in behaviour to the API's runner, and for the same reason both exist rather
+ * than one: both call the same check functions over the same accepted-content service, so neither can
+ * reach content the other could not.
+ */
+export function cliItemRunner(
+  pool: Pool,
+  operation: string,
+  title: string,
+): (item: { ref: string; projectId: string; position: number }) => Promise<{
+  code: ItemCode;
+  detail?: Record<string, unknown> | undefined;
+}> {
+  return async (item) => {
+    const chapterNo = Number(item.ref);
+    if (!Number.isInteger(chapterNo) || chapterNo < 1)
+      return { code: 'VALIDATION_FAILED', detail: {} };
+    const accepted = await exportAccepted(pool, {
+      projectId: item.projectId,
+      chapters: [chapterNo],
+      format: 'text',
+      title,
+    });
+    if (accepted.chapters.length === 0) return { code: 'NOT_FOUND', detail: {} };
+    const text = await chapterBodyOf(pool, item.projectId, chapterNo);
+    if (operation === 'platform_format_check') {
+      const result = checkPlatformFormat(resolveProfile('generic', '1.0'), {
+        metadata: { title },
+        chapters: [{ chapter_no: chapterNo, text }],
+        manifestFields: ['manifest_version', 'project_id', 'chapters', 'content_hash'],
+      });
+      return {
+        code: result.passed ? 'OK' : 'CHECK_FAILED',
+        detail: { errors: result.errors, warnings: result.warnings },
+      };
+    }
+    const summary = typographySummary(checkTypography(text));
+    return {
+      code: summary.passed ? 'OK' : 'CHECK_FAILED',
+      detail: { errors: summary.errors, warnings: summary.warnings, codes: summary.codes },
+    };
+  };
+}
 
 export function cmdIdentityCompile(
   composedRef: string,
@@ -1256,6 +1607,21 @@ Database commands (DATABASE_URL required):
                                                add a thesaurus entry; every kind except terminology names an entity
   operator:thesaurus-set-active <project> <alias-id> on|off
                                                reactivate or deactivate an alias (never deleted: a former name is history)
+  ops:dependencies                             per-dependency status: up/degraded/unavailable/disabled/starting/draining
+  preview:create <project> <chapter#> [--instruction=…] [--key=…]
+                                               deterministic regeneration preview; never alters accepted content
+  preview:list <project> [--limit=20]          previews for a project, newest first, bounded
+  preview:accept <project> <preview-id>        accept a preview into a NEW working version (still faces every gate)
+  preview:discard <project> <preview-id>       discard a preview (the row is retained: proposals are history)
+  preview:cancel <project> <preview-id>        cancel a preview
+  quality:typography <project> [--chapter=N]   deterministic mechanical typography checks (NOT a quality verdict)
+  quality:platform-format <project> [platform] [rules-version] [--identifier=…]
+                                               OFFLINE platform format validation; never contacts a platform
+  quality:profiles                             the bundled versioned platform profiles
+  export:package <project> [--out=dir] [--platform=generic] [--rules=1.0] [--identifier=…]
+                                               prepare a reproducible LOCAL export package; never uploads or publishes
+  batch:run <project> <operation> <refs> [--key=…]
+                                               bounded batch (max 50) of typography_check | platform_format_check
   constraints:compile <chapter#> <spec.json> [cap]
                                                compile the Active Constraint Set for a chapter (no database)
 `;
