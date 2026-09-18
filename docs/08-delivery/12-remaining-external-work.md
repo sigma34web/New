@@ -93,3 +93,9 @@ Still open and credential-free:
   through `POST /v1/jobs/:jobAction` (owner-gated) and through the durable control path; it is
   deliberately NOT duplicated under `/v1/operator/*`, because a second route onto the same state machine
   would be two authorization surfaces for one action.
+
+## Blocked on a repository permission
+
+| Item | Why it cannot be done here | What is already prepared |
+| --- | --- | --- |
+| The CI no-skip guards for the product suites | the GitHub App pushing this branch lacks the `workflows` permission, so a commit touching `.github/workflows/` is rejected by the remote | the exact patch is in the pull request body, verbatim and ready to apply. It adds an explicit `pnpm test:e2e-readiness` run with a forty-stage durable-report check, an explicit `pnpm test:perf-smoke` run, junit guards that the six new product suites actually ran, a zero-skipped-tests gate and hard job timeouts. It removes and weakens nothing. **A maintainer with the `workflows` permission must apply it; until then the guards are NOT installed.** |
