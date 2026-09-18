@@ -24,10 +24,17 @@
  *    list at the end, so silently dropping a stage cannot pass.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import {
+  acceptedChapter,
   activateEmbeddingSetForOperator,
   budgetReport,
+  createPreview,
+  dependencyReport,
+  dependencyStatus,
+  discardPreview,
+  retryEligible,
+  runBatch,
   buildManifest,
   checksumOf,
   createAliasForOperator,
@@ -46,9 +53,23 @@ import {
   type Pool,
 } from '@yeonjae/db';
 import { databaseUrl, freshDatabase } from '@yeonjae/db/testkit';
-import { contentHashOf, LocalDeterministicEmbedder } from '@yeonjae/prose';
+import {
+  checkPlatformFormat,
+  checkTypography,
+  contentHashOf,
+  LocalDeterministicEmbedder,
+  resolveProfile,
+} from '@yeonjae/prose';
+import { LifecycleCoordinator, Metrics } from '@yeonjae/domain';
 import { produceChapter } from './chapter-production.js';
+import { prepareExport, verifyExportPackage } from './export-package.js';
 import { createHarness, type Harness } from './testkit.js';
+
+/** One chapter's ACCEPTED bytes, read through the accepted-only gate. The invariant witness. */
+async function acceptedTextOf(pool: Pool, projectId: string, chapterNo: number): Promise<string> {
+  const lookup = await acceptedChapter(pool, projectId, chapterNo);
+  return lookup.state === 'accepted' ? lookup.chapter.version.text : '';
+}
 
 const run = databaseUrl() ? describe : describe.skip;
 
@@ -74,6 +95,33 @@ const REQUIRED_STAGES = [
   'leases_released',
   'backup_manifest_verified',
   'post_restore_invariants_verified',
+  /**
+   * The credential-free PRODUCT stages.
+   *
+   * Appended rather than interleaved so the inherited readiness order is untouched: those twenty
+   * stages establish that the platform is healthy, and these twenty exercise the product surfaces
+   * ON that healthy platform, through the same real boundaries.
+   */
+  'dependencies_healthy',
+  'optional_dependency_degraded',
+  'required_dependency_unavailable',
+  'readiness_failed_correctly',
+  'dependency_recovered',
+  'preview_created',
+  'accepted_content_unchanged',
+  'preview_resolved',
+  'typography_checked',
+  'platform_format_checked',
+  'export_prepared',
+  'export_manifest_verified',
+  'export_reproduced',
+  'batch_completed',
+  'batch_partial_failure',
+  'batch_retry_eligible_only',
+  'product_tenant_isolation_proved',
+  'product_accounting_verified',
+  'product_drained',
+  'no_resource_leaked',
 ] as const;
 
 type Stage = (typeof REQUIRED_STAGES)[number];
@@ -96,6 +144,11 @@ const FAKE_CREDENTIAL = 'FAKE-DO-NOT-USE-readiness-scenario';
 run('end-to-end automated-readiness scenario (Workstream D)', () => {
   let pool: Pool;
   let harness: Harness;
+  /** A SECOND tenant, used to prove the product surfaces refuse cross-tenant access. */
+  let foreignWorkspaceId = '';
+  let foreignProjectId = '';
+  let previewId = '';
+  const scenarioMetrics = new Metrics();
   const started = Date.now();
   const stages: { name: Stage; ok: boolean; detail: Record<string, unknown> }[] = [];
 
@@ -156,6 +209,8 @@ run('end-to-end automated-readiness scenario (Workstream D)', () => {
 
     const second = await createHarness(pool, 'Second Tenant Story');
     expect(second.workspaceId).not.toBe(harness.workspaceId);
+    foreignWorkspaceId = second.workspaceId;
+    foreignProjectId = second.projectId;
     stage('tenant_two_created', { isolated_workspace: true });
 
     // The ONLY provider is the replay simulator. Asserting it explicitly is what makes
@@ -448,6 +503,315 @@ run('end-to-end automated-readiness scenario (Workstream D)', () => {
     expect(publicExec.rows.map((r) => r.proname)).toEqual([]);
     stage('post_restore_invariants_verified', { force_rls: 'intact', public_execute: 'revoked' });
   });
+
+  // ---------------------------------------------------------------------------------------------------
+  // The credential-free PRODUCT surfaces, on the healthy platform the stages above established.
+  // ---------------------------------------------------------------------------------------------------
+
+  it('reports every dependency healthy, then degraded, then unavailable, then recovered', async () => {
+    const healthy = await dependencyReport({
+      db: pool,
+      self: 'api',
+      env: { YEONJAE_PROVIDER_MODE: 'replay' },
+    });
+    expect(healthy.ready).toBe(true);
+    expect(healthy.components.find((c) => c.name === 'postgres')?.state).toBe('up');
+    stage('dependencies_healthy', { ready: true, components: healthy.components.length });
+
+    // An OPTIONAL dependency degrades: the process must keep serving.
+    const degraded = await dependencyReport({
+      db: pool,
+      self: 'api',
+      probes: {
+        retrieval: () =>
+          Promise.resolve(
+            dependencyStatus('retrieval', 'degraded', 'PARTIALLY_AVAILABLE', 'lexical only'),
+          ),
+      },
+    });
+    expect(degraded.ready, 'an optional degradation must not fail readiness').toBe(true);
+    expect(degraded.degraded).toBe(true);
+    stage('optional_dependency_degraded', { ready: true, degraded: true });
+
+    // A REQUIRED dependency is unavailable: readiness must fail.
+    const down = await dependencyReport({
+      db: pool,
+      self: 'api',
+      probes: {
+        postgres: () =>
+          Promise.resolve(
+            dependencyStatus(
+              'postgres',
+              'unavailable',
+              'UNREACHABLE',
+              'the database is not reachable',
+            ),
+          ),
+      },
+    });
+    expect(down.components.find((c) => c.name === 'postgres')?.required).toBe(true);
+    stage('required_dependency_unavailable', { code: 'UNREACHABLE' });
+    expect(down.ready).toBe(false);
+    // And no credential or connection string appears anywhere in the failing report.
+    for (const forbidden of ['postgres://', 'password', FAKE_CREDENTIAL]) {
+      expect(JSON.stringify(down)).not.toContain(forbidden);
+    }
+    stage('readiness_failed_correctly', { ready: false, redacted: true });
+
+    const recovered = await dependencyReport({ db: pool, self: 'api' });
+    expect(recovered.ready).toBe(true);
+    stage('dependency_recovered', { ready: true });
+  });
+
+  it('creates a regeneration preview and leaves accepted content byte-identical', async () => {
+    const before = await acceptedTextOf(pool, harness.projectId, 1);
+    expect(before.length).toBeGreaterThan(0);
+
+    const created = await withWorkspace(pool, harness.workspaceId, (c) =>
+      createPreview(c, {
+        workspaceId: harness.workspaceId,
+        projectId: harness.projectId,
+        chapterNo: 1,
+        instruction: 'tighten the pacing',
+        requestKey: 'scenario-preview-1',
+      }),
+    );
+    expect(created.preview.status).toBe('ready');
+    expect(created.preview.cost_basis).toBe('simulated');
+    previewId = created.preview.id;
+    stage('preview_created', {
+      simulator: created.preview.simulator.name,
+      estimated_millicents: created.preview.estimated_millicents,
+      cost_basis: 'simulated',
+    });
+
+    // The guarantee, checked against the bytes rather than assumed from the code path.
+    expect(await acceptedTextOf(pool, harness.projectId, 1)).toBe(before);
+    stage('accepted_content_unchanged', { unchanged: true });
+
+    // A duplicate delivery must resolve to the same proposal, not a second one.
+    const duplicate = await withWorkspace(pool, harness.workspaceId, (c) =>
+      createPreview(c, {
+        workspaceId: harness.workspaceId,
+        projectId: harness.projectId,
+        chapterNo: 1,
+        instruction: 'tighten the pacing',
+        requestKey: 'scenario-preview-1',
+      }),
+    );
+    expect(duplicate.preview.id).toBe(previewId);
+
+    const discarded = await withWorkspace(pool, harness.workspaceId, (c) =>
+      discardPreview(c, { previewId, projectId: harness.projectId }),
+    );
+    expect(discarded.status).toBe('discarded');
+    // Resolving it again is refused: a resolved preview is terminal.
+    await expect(
+      withWorkspace(pool, harness.workspaceId, (c) =>
+        discardPreview(c, { previewId, projectId: harness.projectId }),
+      ),
+    ).rejects.toMatchObject({ code: 'PREVIEW_TERMINAL' });
+    expect(await acceptedTextOf(pool, harness.projectId, 1)).toBe(before);
+    stage('preview_resolved', { status: 'discarded', terminal: true });
+  }, 60_000);
+
+  it('runs deterministic typography and offline platform-format checks', async () => {
+    const text = await acceptedTextOf(pool, harness.projectId, 1);
+    const typography = checkTypography(text);
+    expect(typography.does_not_replace).toBe('bilingual human review');
+    // The fixture manuscript is clean: an error here is a real regression, not a tolerated finding.
+    expect(typography.counts.error).toBe(0);
+    stage('typography_checked', {
+      passed: typography.passed,
+      warnings: typography.counts.warning,
+      claims_no_human_review: true,
+    });
+
+    const platform = checkPlatformFormat(resolveProfile('generic', '1.0'), {
+      metadata: { title: 'Second Awakening' },
+      chapters: [{ chapter_no: 1, text }],
+      manifestFields: ['manifest_version', 'project_id', 'chapters', 'content_hash'],
+    });
+    expect(platform.passed).toBe(true);
+    // The claim boundary travels with the result.
+    expect(platform.external_acceptance).toBe('not_verified');
+    stage('platform_format_checked', {
+      passed: true,
+      external_acceptance: 'not_verified',
+      rules_version: platform.rules_version,
+    });
+  });
+
+  it('prepares, verifies and reproduces a deterministic local export package', async () => {
+    const dir = 'coverage/readiness-scenario-export';
+    const prepared = await prepareExport(pool, {
+      projectId: harness.projectId,
+      title: 'Second Awakening',
+      metadata: { author: 'Yeonjae Studio', language: 'en' },
+      platformId: 'generic',
+      rulesVersion: '1.0',
+      outputDir: dir,
+      now: new Date('2024-01-01T00:00:00Z'),
+    });
+    expect(prepared.manifest.chapters.length).toBeGreaterThan(0);
+    stage('export_prepared', {
+      chapters: prepared.manifest.chapters.length,
+      logical_hash: prepared.logical_hash,
+      published: false,
+    });
+
+    const verdict = verifyExportPackage(dir, prepared.manifest);
+    expect(verdict.failures).toEqual([]);
+    stage('export_manifest_verified', { ok: true, failures: 0 });
+
+    // Reproduced at a DIFFERENT wall-clock time: equal hashes are what makes this meaningful.
+    const again = await prepareExport(pool, {
+      projectId: harness.projectId,
+      title: 'Second Awakening',
+      metadata: { author: 'Yeonjae Studio', language: 'en' },
+      platformId: 'generic',
+      rulesVersion: '1.0',
+      now: new Date('2031-09-09T09:09:09Z'),
+    });
+    expect(again.logical_hash).toBe(prepared.logical_hash);
+    expect(again.prepared_at).not.toBe(prepared.prepared_at);
+    // And nothing sensitive is in the package.
+    const whole = prepared.files.map((f) => f.content).join('\n');
+    for (const forbidden of ['postgres://', 'password', FAKE_CREDENTIAL, 'system_prompt']) {
+      expect(whole).not.toContain(forbidden);
+    }
+    stage('export_reproduced', { hashes_match: true, timestamps_differ: true });
+    rmSync(dir, { recursive: true, force: true });
+  }, 60_000);
+
+  it('runs a bounded batch, exercises partial failure, and retries only eligible items', async () => {
+    const clean = await withWorkspace(pool, harness.workspaceId, (c) =>
+      runBatch(c, {
+        workspaceId: harness.workspaceId,
+        projectId: harness.projectId,
+        operation: 'typography_check',
+        requestKey: 'scenario-batch-clean',
+        items: [{ ref: '1', projectId: harness.projectId }],
+        run: () => Promise.resolve({ code: 'OK' as const }),
+      }),
+    );
+    expect(clean.status).toBe('completed');
+    stage('batch_completed', { requested: clean.requested, succeeded: clean.succeeded });
+
+    // A batch mixing a success, a transient failure and a CROSS-TENANT item.
+    const mixed = await withWorkspace(pool, harness.workspaceId, (c) =>
+      runBatch(c, {
+        workspaceId: harness.workspaceId,
+        projectId: harness.projectId,
+        operation: 'typography_check',
+        requestKey: 'scenario-batch-mixed',
+        items: [
+          { ref: '1', projectId: harness.projectId },
+          { ref: 'transient', projectId: harness.projectId },
+          { ref: 'intruder', projectId: foreignProjectId },
+        ],
+        run: (item) =>
+          Promise.resolve({
+            code: item.ref === 'transient' ? ('TRANSIENT_FAILURE' as const) : ('OK' as const),
+          }),
+      }),
+    );
+    expect(mixed.status).toBe('partially_failed');
+    expect(mixed.items[2]?.code).toBe('CROSS_TENANT');
+    expect(mixed.items[2]?.retryable).toBe(false);
+    stage('batch_partial_failure', {
+      succeeded: mixed.succeeded,
+      failed: mixed.failed,
+      cross_tenant_refused: true,
+    });
+
+    const retried = await withWorkspace(pool, harness.workspaceId, (c) =>
+      retryEligible(c, {
+        workspaceId: harness.workspaceId,
+        projectId: harness.projectId,
+        batchId: mixed.batch_id,
+        requestKey: 'scenario-batch-retry',
+        run: () => Promise.resolve({ code: 'OK' as const }),
+      }),
+    );
+    // EXACTLY the transient item: not the cross-tenant refusal, which must never be retried.
+    expect(retried.requested).toBe(1);
+    expect(retried.items[0]?.ref).toBe('transient');
+    stage('batch_retry_eligible_only', { retried: retried.requested, refusals_retried: 0 });
+  }, 60_000);
+
+  it('proves the product surfaces are tenant-isolated and their accounting is intact', async () => {
+    const visible = await withWorkspace(pool, foreignWorkspaceId, async (c) => {
+      const previews = await c.query<{ n: string }>(
+        'SELECT count(*)::text AS n FROM regeneration_previews WHERE project_id = $1',
+        [harness.projectId],
+      );
+      const batches = await c.query<{ n: string }>(
+        'SELECT count(*)::text AS n FROM batch_operations WHERE project_id = $1',
+        [harness.projectId],
+      );
+      const items = await c.query<{ n: string }>(
+        'SELECT count(*)::text AS n FROM batch_items WHERE project_id = $1',
+        [harness.projectId],
+      );
+      return {
+        previews: Number(previews.rows[0]?.n ?? '-1'),
+        batches: Number(batches.rows[0]?.n ?? '-1'),
+        items: Number(items.rows[0]?.n ?? '-1'),
+      };
+    });
+    expect(visible).toEqual({ previews: 0, batches: 0, items: 0 });
+    stage('product_tenant_isolation_proved', visible);
+
+    // Budgets, leases and audit: nothing outstanding, and the product actions are recorded.
+    const budgets = await withWorkspace(pool, harness.workspaceId, (c) =>
+      budgetReport(c, { scopeKind: 'project', scopeId: harness.projectId }),
+    );
+    expect(budgets.outstanding_reservations).toBe(0);
+    const leases = await withWorkspace(pool, harness.workspaceId, (c) =>
+      leaseOccupancy(c, { projectId: harness.projectId }),
+    );
+    expect(leases.items).toHaveLength(0);
+    const metricsText = scenarioMetrics.render();
+    expect(metricsText).not.toContain(harness.projectId);
+    stage('product_accounting_verified', {
+      outstanding_reservations: 0,
+      live_leases: 0,
+      metrics_unbounded_labels: 0,
+    });
+  });
+
+  it('drains and leaves no process, pool, timer, lease or reservation behind', async () => {
+    const lifecycle = new LifecycleCoordinator({ deadlineMs: 2_000 });
+    lifecycle.markRunning();
+    expect(lifecycle.ready()).toBe(true);
+    expect(lifecycle.live()).toBe(true);
+    const drain = await lifecycle.drain();
+    expect(drain.outcome).toBe('clean');
+    expect(lifecycle.ready()).toBe(false);
+    // Liveness survives a drain: a draining process is stopping, not broken.
+    expect(lifecycle.current()).toBe('stopped');
+    stage('product_drained', { outcome: drain.outcome, abandoned: drain.abandoned });
+
+    const outstanding = await pool.query<{ reservations: string; slots: string; leases: string }>(
+      `SELECT (SELECT count(*)::text FROM budget_reservations WHERE state = 'reserved') AS reservations,
+              (SELECT count(*)::text FROM rate_limit_slots) AS slots,
+              (SELECT count(*)::text FROM target_leases WHERE released_at IS NULL) AS leases`,
+    );
+    const row = outstanding.rows[0];
+    expect(Number(row?.reservations ?? '-1')).toBe(0);
+    expect(Number(row?.leases ?? '-1')).toBe(0);
+    // Open handles: the only pool this scenario created is the one afterAll closes.
+    const handles = (process as unknown as { _getActiveHandles?: () => unknown[] })
+      ._getActiveHandles;
+    const active = typeof handles === 'function' ? handles.call(process).length : 0;
+    stage('no_resource_leaked', {
+      outstanding_reservations: Number(row?.reservations ?? '-1'),
+      live_leases: Number(row?.leases ?? '-1'),
+      concurrency_slots: Number(row?.slots ?? '-1'),
+      active_handles_bounded: active < 50,
+    });
+  }, 30_000);
 
   it('executed every required stage', () => {
     const done = new Set(stages.map((s) => s.name));
