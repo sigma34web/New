@@ -127,7 +127,7 @@ export function gensparkRouting(): RoutingTable {
     },
   ];
   return {
-    R: route('gemini-3.8-flash', 'google'),
+    R: route('claude-opus-4-7', 'anthropic'),
     P: route('gemini-3.8-flash', 'google'),
     M: route('gemini-3.8-flash', 'google'),
     C: route('gemini-3.8-flash', 'google'),
