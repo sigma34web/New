@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   checkOutputLanguage,
+  contentHashOf,
   measure,
   toNfcText,
   verifyEvidence,
@@ -15,6 +16,8 @@ import { loadPolicies, loadSchemas, validatorFor } from '@yeonjae/domain';
 import {
   type Pool,
   approveManuscriptVersion,
+  budgetReport,
+  BUDGET_SCOPE_KINDS,
   configFromEnv,
   createChapter,
   createEntity,
@@ -22,14 +25,46 @@ import {
   createPool,
   createProject,
   createWorkspace,
+  embeddingSetReport,
   factsForEntity,
+  gcEligible,
   getProject,
+  leaseOccupancy,
   listCommits,
   migrate,
+  OPERATION_CLASSES,
+  OPERATOR_ALIAS_KINDS,
+  OperatorMutationError,
+  activateEmbeddingSetForOperator,
+  createAliasForOperator,
+  rateLimitStatus,
+  retrievalDiagnostics,
   rollbackLatest,
+  rollbackEmbeddingSetForOperator,
+  setAliasActiveForOperator,
   stateAt,
+  thesaurusListing,
+  withWorkspace,
+  acceptPreview,
+  BatchError,
+  cancelPreview,
+  createPreview,
+  dependencyReport,
+  discardPreview,
+  listPreviews,
+  PreviewError,
+  runBatch,
+  type ItemCode,
 } from '@yeonjae/db';
 import { acceptChapter, DeltaRejectedError } from '@yeonjae/canon';
+import {
+  checkPlatformFormat,
+  checkTypography,
+  PLATFORM_PROFILES,
+  PlatformProfileError,
+  resolveProfile,
+  typographySummary,
+} from '@yeonjae/prose';
 import { compileBlock, composeIdentity, ProfileStore, type RoleVariant } from '@yeonjae/narrative';
 import { PromptRegistry } from '@yeonjae/prompts';
 import {
@@ -50,6 +85,8 @@ import {
 import { loadPolicies as loadPolicyMap, type PolicyRef } from '@yeonjae/domain';
 import {
   exportAccepted,
+  ExportRefusedError,
+  prepareExport,
   produceChapter,
   workflowIdFor,
   workflowStatus,
@@ -436,6 +473,477 @@ export async function runDb(argv: readonly string[]): Promise<AsyncCommandResult
         } catch (err) {
           if (err instanceof WorkflowError)
             return { ok: false, output: { error: err.code, detail: err.detail } };
+          throw err;
+        }
+      }
+      // ---- operator diagnostics (Workstream A) ------------------------------------------------
+      //
+      // These commands call the SAME `@yeonjae/db` operator layer the `/v1/operator/*` routes call, so
+      // the CLI cannot answer an operational question differently from the API. Each one runs inside the
+      // project's workspace RLS scope, resolved from the project row rather than from an argument, which
+      // is the CLI's equivalent of deriving scope from the auth context: an operator cannot widen the
+      // read by passing a different workspace id.
+      case 'operator:rate-limits': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const requested =
+          flags.find((f) => f.startsWith('--class='))?.slice('--class='.length) ?? 'provider_call';
+        const operationClass = OPERATION_CLASSES.find((c) => c === requested);
+        if (!operationClass)
+          return {
+            ok: false,
+            output: {
+              error: 'VALIDATION_FAILED',
+              detail: `--class must be one of: ${OPERATION_CLASSES.join(', ')}`,
+            },
+          };
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            rateLimitStatus(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              operationClass,
+            }),
+          ),
+        };
+      }
+      case 'operator:leases': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            leaseOccupancy(c, {
+              projectId,
+              limit: flags.find((f) => f.startsWith('--limit='))?.slice('--limit='.length),
+            }),
+          ),
+        };
+      }
+      case 'operator:budget': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const requested =
+          flags.find((f) => f.startsWith('--scope='))?.slice('--scope='.length) ?? 'project';
+        const scopeKind = BUDGET_SCOPE_KINDS.find((k) => k === requested);
+        if (!scopeKind || (scopeKind !== 'project' && scopeKind !== 'workspace'))
+          return {
+            ok: false,
+            output: {
+              error: 'VALIDATION_FAILED',
+              detail: '--scope must be one of: project, workspace',
+            },
+          };
+        const project = await getProject(pool, projectId);
+        const scopeId = scopeKind === 'project' ? projectId : project.workspace_id;
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            budgetReport(c, { scopeKind, scopeId }),
+          ),
+        };
+      }
+      case 'operator:embedding-set': {
+        const [projectId] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            embeddingSetReport(c, { projectId, hashOf: contentHashOf }),
+          ),
+        };
+      }
+      case 'operator:embedding-gc': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const keepFlag = flags.find((f) => f.startsWith('--keep='))?.slice('--keep='.length);
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            gcEligible(c, { projectId, keep: keepFlag === undefined ? 1 : Number(keepFlag) }),
+          ),
+        };
+      }
+      case 'operator:thesaurus': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            thesaurusListing(c, {
+              projectId,
+              limit: flags.find((f) => f.startsWith('--limit='))?.slice('--limit='.length),
+              includeInactive: flags.includes('--include-inactive'),
+            }),
+          ),
+        };
+      }
+      case 'operator:retrieval': {
+        const [projectId, query, ...flags] = rest;
+        if (!projectId || !query) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        return {
+          ok: true,
+          output: await withWorkspace(pool, project.workspace_id, (c) =>
+            retrievalDiagnostics(c, {
+              projectId,
+              query,
+              limit: flags.find((f) => f.startsWith('--limit='))?.slice('--limit='.length),
+            }),
+          ),
+        };
+      }
+      /**
+       * Operator MUTATIONS (Workstream B).
+       *
+       * Same service layer as the `/v1/operator/*` routes, so the CLI cannot make a different decision
+       * from the API. `OperatorMutationError` is translated into `{ error, detail }` with `ok: false`,
+       * which `main.ts` turns into a non-zero exit code — a stable, documented contract for scripts.
+       *
+       * Authorization note: the CLI runs with direct database credentials and is therefore an
+       * ADMINISTRATIVE surface by construction, the same as `db:migrate` and `canon:rollback` already
+       * are. The owner-role check lives on the HTTP boundary, where an untrusted caller exists.
+       */
+      case 'operator:embedding-activate': {
+        const [projectId, setId] = rest;
+        if (!projectId || !setId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const outcome = await withWorkspace(pool, project.workspace_id, (c) =>
+            activateEmbeddingSetForOperator(c, { projectId, setId }),
+          );
+          return { ok: true, output: outcome.result };
+        } catch (err) {
+          if (err instanceof OperatorMutationError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'operator:embedding-rollback': {
+        const [projectId] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const outcome = await withWorkspace(pool, project.workspace_id, (c) =>
+            rollbackEmbeddingSetForOperator(c, { projectId }),
+          );
+          return { ok: true, output: outcome.result };
+        } catch (err) {
+          if (err instanceof OperatorMutationError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'operator:thesaurus-add': {
+        const [projectId, surface, ...flags] = rest;
+        if (!projectId || !surface) return { ok: false, output: USAGE };
+        const requested =
+          flags.find((f) => f.startsWith('--kind='))?.slice('--kind='.length) ?? 'alias';
+        const kind = OPERATOR_ALIAS_KINDS.find((k) => k === requested);
+        if (!kind)
+          return {
+            ok: false,
+            output: {
+              error: 'ALIAS_INVALID',
+              detail: `--kind must be one of: ${OPERATOR_ALIAS_KINDS.join(', ')}`,
+            },
+          };
+        const entityId = flags.find((f) => f.startsWith('--entity='))?.slice('--entity='.length);
+        const project = await getProject(pool, projectId);
+        try {
+          const outcome = await withWorkspace(pool, project.workspace_id, (c) =>
+            createAliasForOperator(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              surface,
+              kind,
+              entityId,
+            }),
+          );
+          return { ok: true, output: outcome.result };
+        } catch (err) {
+          if (err instanceof OperatorMutationError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'operator:thesaurus-set-active': {
+        const [projectId, aliasId, state] = rest;
+        if (!projectId || !aliasId || (state !== 'on' && state !== 'off'))
+          return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const outcome = await withWorkspace(pool, project.workspace_id, (c) =>
+            setAliasActiveForOperator(c, { projectId, aliasId, active: state === 'on' }),
+          );
+          return { ok: true, output: outcome.result };
+        } catch (err) {
+          if (err instanceof OperatorMutationError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      /**
+       * The credential-free product commands.
+       *
+       * Every one of them calls the SAME service layer the API routes call: `dependencyReport`,
+       * `createPreview`, `checkTypography`, `checkPlatformFormat`, `prepareExport` and `runBatch`. A
+       * CLI that re-implemented any of those rules would be a second place for them to be wrong.
+       */
+      case 'ops:dependencies': {
+        const report = await dependencyReport({ db: pool, self: 'api' });
+        return {
+          // A required dependency that is down is a non-zero exit, so a script can gate on it.
+          ok: report.ready,
+          output: {
+            ready: report.ready,
+            degraded: report.degraded,
+            draining: report.draining,
+            totals: report.totals,
+            components: report.components,
+          },
+        };
+      }
+      case 'preview:create': {
+        const [projectId, chapterNo, ...restArgs] = rest;
+        if (!projectId || !chapterNo) return { ok: false, output: USAGE };
+        const instruction =
+          restArgs.find((f) => f.startsWith('--instruction='))?.slice('--instruction='.length) ??
+          'tighten the pacing';
+        const key =
+          restArgs.find((f) => f.startsWith('--key='))?.slice('--key='.length) ??
+          `cli:${projectId}:${chapterNo}:${instruction}`;
+        const project = await getProject(pool, projectId);
+        try {
+          const result = await withWorkspace(pool, project.workspace_id, (c) =>
+            createPreview(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              chapterNo: Number(chapterNo),
+              instruction,
+              requestKey: key,
+            }),
+          );
+          return {
+            ok: true,
+            output: {
+              preview: result.preview,
+              duplicate: result.duplicate,
+              proposed_text: result.proposed_text,
+            },
+          };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'preview:list': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const limit = Number(
+          flags.find((f) => f.startsWith('--limit='))?.slice('--limit='.length) ?? '20',
+        );
+        const project = await getProject(pool, projectId);
+        const listing = await withWorkspace(pool, project.workspace_id, (c) =>
+          listPreviews(c, { projectId, limit: Number.isFinite(limit) ? limit : 20 }),
+        );
+        return { ok: true, output: listing };
+      }
+      case 'preview:accept':
+      case 'preview:discard': {
+        const [projectId, previewId] = rest;
+        if (!projectId || !previewId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          if (cmd === 'preview:accept') {
+            const result = await acceptPreview(
+              pool,
+              (fn) => withWorkspace(pool, project.workspace_id, fn),
+              { previewId, projectId },
+            );
+            return { ok: true, output: result };
+          }
+          const view = await withWorkspace(pool, project.workspace_id, (c) =>
+            discardPreview(c, { previewId, projectId }),
+          );
+          return { ok: true, output: { preview: view } };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'preview:cancel': {
+        const [projectId, previewId] = rest;
+        if (!projectId || !previewId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const view = await withWorkspace(pool, project.workspace_id, (c) =>
+            cancelPreview(c, { previewId, projectId }),
+          );
+          return { ok: true, output: { preview: view } };
+        } catch (err) {
+          if (err instanceof PreviewError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'quality:typography': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const chapterFlag = flags
+          .find((f) => f.startsWith('--chapter='))
+          ?.slice('--chapter='.length);
+        const project = await getProject(pool, projectId);
+        const accepted = await exportAccepted(pool, {
+          projectId,
+          chapters: chapterFlag === undefined ? undefined : [Number(chapterFlag)],
+          format: 'text',
+          title: project.title,
+        });
+        const chapters = (
+          await Promise.all(
+            accepted.chapters.map(async (chapter) => ({
+              chapter_no: chapter.chapter_no,
+              ...typographySummary(
+                checkTypography(await chapterBodyOf(pool, projectId, chapter.chapter_no)),
+              ),
+            })),
+          )
+        ).sort((a, b) => a.chapter_no - b.chapter_no);
+        const passed = chapters.every((c) => c.passed);
+        return {
+          ok: passed,
+          output: {
+            project_id: projectId,
+            chapters,
+            passed,
+            does_not_replace: 'bilingual human review',
+          },
+        };
+      }
+      case 'quality:platform-format': {
+        const [projectId, platformId, rulesVersion, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        try {
+          const profile = resolveProfile(platformId ?? 'generic', rulesVersion ?? '1.0');
+          const accepted = await exportAccepted(pool, {
+            projectId,
+            format: 'text',
+            title: project.title,
+          });
+          const result = checkPlatformFormat(profile, {
+            metadata: { title: project.title },
+            chapters: await Promise.all(
+              accepted.chapters.map(async (c) => ({
+                chapter_no: c.chapter_no,
+                text: await chapterBodyOf(pool, projectId, c.chapter_no),
+              })),
+            ),
+            manifestFields: [
+              'manifest_version',
+              'project_id',
+              'chapters',
+              'content_hash',
+              'external_identifier',
+            ],
+            identifier: flags
+              .find((f) => f.startsWith('--identifier='))
+              ?.slice('--identifier='.length),
+            totalBytes: Buffer.byteLength(accepted.text),
+          });
+          return { ok: result.passed, output: result };
+        } catch (err) {
+          if (err instanceof PlatformProfileError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'quality:profiles': {
+        return {
+          ok: true,
+          output: {
+            profiles: PLATFORM_PROFILES.map((p) => ({
+              platform_id: p.platform_id,
+              rules_version: p.rules_version,
+              display_name: p.display_name,
+            })),
+          },
+        };
+      }
+      case 'export:package': {
+        const [projectId, ...flags] = rest;
+        if (!projectId) return { ok: false, output: USAGE };
+        const project = await getProject(pool, projectId);
+        const outputDir = flags.find((f) => f.startsWith('--out='))?.slice('--out='.length);
+        try {
+          const prepared = await prepareExport(pool, {
+            projectId,
+            title: project.title,
+            metadata: { title: project.title },
+            platformId:
+              flags.find((f) => f.startsWith('--platform='))?.slice('--platform='.length) ??
+              'generic',
+            rulesVersion:
+              flags.find((f) => f.startsWith('--rules='))?.slice('--rules='.length) ?? '1.0',
+            identifier: flags
+              .find((f) => f.startsWith('--identifier='))
+              ?.slice('--identifier='.length),
+            outputDir,
+          });
+          return {
+            ok: true,
+            output: {
+              manifest: prepared.manifest,
+              logical_hash: prepared.logical_hash,
+              written_to: prepared.written_to,
+              total_bytes: prepared.total_bytes,
+              files: prepared.files.map((f) => ({ path: f.path, hash: f.hash })),
+              // Stated in the output: preparing an export never publishes it.
+              published: false,
+            },
+          };
+        } catch (err) {
+          if (err instanceof ExportRefusedError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
+          throw err;
+        }
+      }
+      case 'batch:run': {
+        const [projectId, operation, refs, ...flags] = rest;
+        if (!projectId || !operation || !refs) return { ok: false, output: USAGE };
+        const items = refs
+          .split(',')
+          .map((r) => r.trim())
+          .filter((r) => r !== '')
+          .map((ref) => ({ ref, projectId }));
+        const key =
+          flags.find((f) => f.startsWith('--key='))?.slice('--key='.length) ??
+          `cli:batch:${projectId}:${operation}:${refs}`;
+        const project = await getProject(pool, projectId);
+        try {
+          const result = await withWorkspace(pool, project.workspace_id, (c) =>
+            runBatch(c, {
+              workspaceId: project.workspace_id,
+              projectId,
+              operation,
+              requestKey: key,
+              items,
+              run: cliItemRunner(pool, operation, project.title),
+            }),
+          );
+          return { ok: result.status === 'completed', output: result };
+        } catch (err) {
+          if (err instanceof BatchError)
+            return { ok: false, output: { error: err.code, detail: err.message } };
           throw err;
         }
       }
@@ -907,7 +1415,91 @@ export const DB_COMMANDS = new Set([
   'chapter:status',
   'chapter:resume',
   'export:accepted',
+  'operator:rate-limits',
+  'operator:leases',
+  'operator:budget',
+  'operator:embedding-set',
+  'operator:embedding-gc',
+  'operator:thesaurus',
+  'operator:retrieval',
+  'operator:embedding-activate',
+  'operator:embedding-rollback',
+  'operator:thesaurus-add',
+  'operator:thesaurus-set-active',
+  'ops:dependencies',
+  'preview:create',
+  'preview:list',
+  'preview:accept',
+  'preview:discard',
+  'preview:cancel',
+  'quality:typography',
+  'quality:platform-format',
+  'quality:profiles',
+  'export:package',
+  'batch:run',
 ]);
+
+/**
+ * One chapter's ACCEPTED text.
+ *
+ * Resolved through `acceptedChapter` rather than by splitting the assembled export document on its
+ * heading markers: prose that itself contains `Chapter N` would truncate the body there, and a check
+ * over a truncated chapter is a check that passed for the wrong reason.
+ */
+export async function chapterBodyOf(
+  pool: Pool,
+  projectId: string,
+  chapterNo: number,
+): Promise<string> {
+  const lookup = await acceptedChapter(pool, projectId, chapterNo);
+  return lookup.state === 'accepted' ? lookup.chapter.version.text : '';
+}
+
+/**
+ * The per-item work the CLI's batch runner performs.
+ *
+ * Deliberately identical in behaviour to the API's runner, and for the same reason both exist rather
+ * than one: both call the same check functions over the same accepted-content service, so neither can
+ * reach content the other could not.
+ */
+export function cliItemRunner(
+  pool: Pool,
+  operation: string,
+  title: string,
+): (item: { ref: string; projectId: string; position: number }) => Promise<{
+  code: ItemCode;
+  detail?: Record<string, unknown> | undefined;
+}> {
+  return async (item) => {
+    const chapterNo = Number(item.ref);
+    if (!Number.isInteger(chapterNo) || chapterNo < 1)
+      return { code: 'VALIDATION_FAILED', detail: {} };
+    const accepted = await exportAccepted(pool, {
+      projectId: item.projectId,
+      chapters: [chapterNo],
+      format: 'text',
+      title,
+    });
+    if (accepted.chapters.length === 0) return { code: 'NOT_FOUND', detail: {} };
+    const text = await chapterBodyOf(pool, item.projectId, chapterNo);
+    if (operation === 'platform_format_check') {
+      const result = checkPlatformFormat(resolveProfile('generic', '1.0'), {
+        metadata: { title },
+        chapters: [{ chapter_no: chapterNo, text }],
+        manifestFields: ['manifest_version', 'project_id', 'chapters', 'content_hash'],
+      });
+      return {
+        code: result.passed ? 'OK' : 'CHECK_FAILED',
+        detail: { errors: result.errors, warnings: result.warnings },
+      };
+    }
+    const summary = typographySummary(checkTypography(text));
+    return {
+      code: summary.passed ? 'OK' : 'CHECK_FAILED',
+      detail: { errors: summary.errors, warnings: summary.warnings, codes: summary.codes },
+    };
+  };
+}
 
 export function cmdIdentityCompile(
   composedRef: string,
@@ -997,6 +1589,39 @@ Database commands (DATABASE_URL required):
   chapter:resume <workflow-id>                 resume a started workflow (same entrypoint as re-running produce)
   export:accepted <project> [--chapters=1,2] [--format=markdown|text] [--full]
                                                export accepted manuscripts only (never working/approved/quarantined)
+  operator:rate-limits <project> [--class=provider_call]
+                                               limiter counters for one operation class (scope key is digested)
+  operator:leases <project> [--limit=20]       live target leases, soonest expiry first, bounded
+  operator:budget <project> [--scope=project|workspace]
+                                               reservations, commitments and remaining budget for a scope
+  operator:embedding-set <project>             the active embedding set and whether it is actually complete
+  operator:embedding-gc <project> [--keep=1]   embedding sets eligible for garbage collection (reports only)
+  operator:thesaurus <project> [--limit=20] [--include-inactive]
+                                               project thesaurus with its ambiguity diagnostic, bounded
+  operator:retrieval <project> <query> [--limit=20]
+                                               bounded hybrid-retrieval diagnostic (ranking only, never passages)
+  operator:embedding-activate <project> <set-id>
+                                               activate an embedding set (refuses an empty or incomplete set)
+  operator:embedding-rollback <project>        restore the embedding set the active one replaced
+  operator:thesaurus-add <project> <surface> [--kind=alias] [--entity=<id>]
+                                               add a thesaurus entry; every kind except terminology names an entity
+  operator:thesaurus-set-active <project> <alias-id> on|off
+                                               reactivate or deactivate an alias (never deleted: a former name is history)
+  ops:dependencies                             per-dependency status: up/degraded/unavailable/disabled/starting/draining
+  preview:create <project> <chapter#> [--instruction=…] [--key=…]
+                                               deterministic regeneration preview; never alters accepted content
+  preview:list <project> [--limit=20]          previews for a project, newest first, bounded
+  preview:accept <project> <preview-id>        accept a preview into a NEW working version (still faces every gate)
+  preview:discard <project> <preview-id>       discard a preview (the row is retained: proposals are history)
+  preview:cancel <project> <preview-id>        cancel a preview
+  quality:typography <project> [--chapter=N]   deterministic mechanical typography checks (NOT a quality verdict)
+  quality:platform-format <project> [platform] [rules-version] [--identifier=…]
+                                               OFFLINE platform format validation; never contacts a platform
+  quality:profiles                             the bundled versioned platform profiles
+  export:package <project> [--out=dir] [--platform=generic] [--rules=1.0] [--identifier=…]
+                                               prepare a reproducible LOCAL export package; never uploads or publishes
+  batch:run <project> <operation> <refs> [--key=…]
+                                               bounded batch (max 50) of typography_check | platform_format_check
   constraints:compile <chapter#> <spec.json> [cap]
                                                compile the Active Constraint Set for a chapter (no database)
 `;

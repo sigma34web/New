@@ -4,3 +4,6 @@ export * from './evidence.js';
 export * from './paragraphs.js';
 export * from './length.js';
 export * from './language.js';
+export * from './typography.js';
+export * from './platform-format.js';
+export * from './local-embeddings.js';

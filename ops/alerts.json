@@ -1,0 +1,257 @@
+{
+  "$comment": "Provider-neutral alert templates (Phase 4 automated readiness). NOT DEPLOYED: no monitoring system observes these. Every `metric` is validated against apps/api/src/observability.ts METRIC and every `labels` entry against the metric label allowlist, so a rule cannot drift from a metric that exists. Thresholds are starting values for a deployment that does not exist yet and need calibration against real traffic.",
+  "version": "1.0.0",
+  "rules": [
+    {
+      "name": "ApiAvailabilityDegraded",
+      "severity": "critical",
+      "metric": "yeonjae_http_requests_total",
+      "labels": ["route", "status_class"],
+      "expr": "ratio of status_class=5xx over 5m exceeds 0.05",
+      "for": "5m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#api-availability",
+      "summary": "More than 5% of API requests are failing."
+    },
+    {
+      "name": "ApiReadinessFailing",
+      "severity": "critical",
+      "metric": "yeonjae_readiness_failures_total",
+      "labels": ["check"],
+      "expr": "increase over 5m is greater than 0",
+      "for": "5m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#readiness",
+      "summary": "A readiness check is failing; this instance should not take traffic."
+    },
+    {
+      "name": "MigrationStateMismatch",
+      "severity": "critical",
+      "metric": "yeonjae_migration_mismatch_total",
+      "labels": ["reason"],
+      "expr": "increase over 5m is greater than 0",
+      "for": "0m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#migration-mismatch",
+      "summary": "Schema state does not match this build. Do not serve traffic.",
+      "$comment": "for: 0m is deliberate. A schema mismatch is not a transient blip and waiting does not make it safer."
+    },
+    {
+      "name": "UnsafeDatabaseRole",
+      "severity": "critical",
+      "metric": "yeonjae_role_assumption_failures_total",
+      "labels": ["reason"],
+      "expr": "increase over 5m is greater than 0",
+      "for": "0m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#unsafe-role",
+      "summary": "The application role is not the expected least-privilege role; tenant isolation may be absent."
+    },
+    {
+      "name": "QueueDelayHigh",
+      "severity": "warning",
+      "metric": "yeonjae_queue_depth",
+      "labels": ["kind"],
+      "expr": "value stays above 100 for 15m",
+      "for": "15m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#queue-delay",
+      "summary": "Work is accumulating faster than the workers drain it."
+    },
+    {
+      "name": "ProviderFailureRateHigh",
+      "severity": "warning",
+      "metric": "yeonjae_provider_attempts_total",
+      "labels": ["provider", "model_class", "status"],
+      "expr": "failure ratio over 10m exceeds 0.2",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#provider-failures",
+      "summary": "A provider is failing a fifth of its attempts."
+    },
+    {
+      "name": "ProviderRetriesElevated",
+      "severity": "info",
+      "metric": "yeonjae_provider_retries_total",
+      "labels": ["reason"],
+      "expr": "rate over 15m exceeds twice the 24h baseline",
+      "for": "15m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#retries",
+      "summary": "Retries are well above baseline; spend is rising without more output."
+    },
+    {
+      "name": "FallbackRateElevated",
+      "severity": "warning",
+      "metric": "yeonjae_provider_fallbacks_total",
+      "labels": ["reason"],
+      "expr": "increase over 15m exceeds 10",
+      "for": "15m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#fallback",
+      "summary": "Calls are being rerouted to secondary models; cost per chapter is rising."
+    },
+    {
+      "name": "RateAdmissionRejections",
+      "severity": "warning",
+      "metric": "yeonjae_rate_admission_total",
+      "labels": ["operation_class", "reason"],
+      "expr": "rejected increase over 10m exceeds 50",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#rate-rejection",
+      "summary": "The shared limiter is refusing a large share of calls."
+    },
+    {
+      "name": "RateAdmissionWaitHigh",
+      "severity": "info",
+      "metric": "yeonjae_rate_admission_wait_seconds",
+      "labels": ["operation_class"],
+      "expr": "p95 over 10m exceeds 5",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#rate-wait",
+      "summary": "Callers are queuing behind the shared rate limit."
+    },
+    {
+      "name": "ConcurrencySaturated",
+      "severity": "warning",
+      "metric": "yeonjae_concurrency_saturated_total",
+      "labels": ["provider"],
+      "expr": "increase over 10m exceeds 20",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#concurrency",
+      "summary": "Shared concurrency is exhausted; work is waiting on leases."
+    },
+    {
+      "name": "BudgetRejections",
+      "severity": "critical",
+      "metric": "yeonjae_budget_reservations_total",
+      "labels": ["scope_kind", "outcome"],
+      "expr": "outcome=refused increase over 10m is greater than 0",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#budget-rejection",
+      "summary": "Work is being refused for budget; production has stopped for this scope."
+    },
+    {
+      "name": "UnknownBillingAccumulating",
+      "severity": "warning",
+      "metric": "yeonjae_unknown_cost_settlements_total",
+      "labels": ["scope_kind"],
+      "expr": "increase over 1h exceeds 5",
+      "for": "1h",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#unknown-billing",
+      "summary": "Calls are settling with unknown cost; the spend figure understates reality."
+    },
+    {
+      "name": "CancellationObservationDelay",
+      "severity": "warning",
+      "metric": "yeonjae_cancellation_observations_total",
+      "labels": ["phase"],
+      "expr": "requests minus observations over 10m exceeds 5",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#cancellation-delay",
+      "summary": "Cancellations are not reaching running calls promptly; paid work continues after a stop."
+    },
+    {
+      "name": "LateResponsesObserved",
+      "severity": "info",
+      "metric": "yeonjae_late_responses_total",
+      "labels": ["outcome"],
+      "expr": "increase over 30m exceeds 3",
+      "for": "30m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#late-responses",
+      "summary": "Providers are answering after cancellation; results are being discarded as designed."
+    },
+    {
+      "name": "StaleWorkerRejections",
+      "severity": "warning",
+      "metric": "yeonjae_stale_worker_rejections_total",
+      "labels": ["reason"],
+      "expr": "increase over 10m exceeds 3",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#stale-worker",
+      "summary": "Workers are being fenced out; a partitioned or slow worker is retrying stale writes."
+    },
+    {
+      "name": "LeaseLossElevated",
+      "severity": "warning",
+      "metric": "yeonjae_lease_loss_total",
+      "labels": ["reason"],
+      "expr": "increase over 10m exceeds 3",
+      "for": "10m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#lease-loss",
+      "summary": "Workers are losing target leases mid-work."
+    },
+    {
+      "name": "DatabasePoolSaturated",
+      "severity": "warning",
+      "metric": "yeonjae_db_pool_saturation_total",
+      "labels": ["component"],
+      "expr": "increase over 5m exceeds 10",
+      "for": "5m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#pool-saturation",
+      "summary": "A database pool is running out of connections."
+    },
+    {
+      "name": "EmbeddingGenerationFailing",
+      "severity": "warning",
+      "metric": "yeonjae_embeddings_generated_total",
+      "labels": ["backend", "outcome"],
+      "expr": "outcome=failed increase over 30m exceeds 10",
+      "for": "30m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#embedding-failure",
+      "summary": "Embedding generation is failing; a new set cannot be activated while incomplete."
+    },
+    {
+      "name": "RetrievalFailing",
+      "severity": "warning",
+      "metric": "yeonjae_retrieval_results_total",
+      "labels": ["mode"],
+      "expr": "zero-result ratio over 15m exceeds 0.5",
+      "for": "15m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#retrieval-failure",
+      "summary": "Retrieval is mostly returning nothing; continuity checks are running blind."
+    },
+    {
+      "name": "RestoreDrillStale",
+      "severity": "warning",
+      "metric": "yeonjae_restore_outcomes_total",
+      "labels": ["outcome"],
+      "expr": "no successful drill in 30d",
+      "for": "0m",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#restore-drill",
+      "summary": "No restore drill has succeeded recently; recovery is unverified."
+    },
+    {
+      "name": "OutputLanguageFailures",
+      "severity": "critical",
+      "metric": "yeonjae_provider_attempts_total",
+      "labels": ["model_class", "status"],
+      "expr": "output-language failures over 1h exceed 3",
+      "for": "1h",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#output-language",
+      "summary": "Manuscript roles are producing non-English output; the governing invariant is failing."
+    },
+    {
+      "name": "EvaluatorRegression",
+      "severity": "warning",
+      "metric": "yeonjae_activity_attempts_total",
+      "labels": ["activity", "outcome"],
+      "expr": "evaluation failure ratio over 6h exceeds twice the 7d baseline",
+      "for": "6h",
+      "runbook": "docs/08-delivery/11-deployment-and-incident-runbooks.md#evaluator-regression",
+      "summary": "Evaluators are rejecting far more than baseline; a prompt or policy change may have regressed."
+    }
+  ],
+  "inhibition": [
+    {
+      "$comment": "A schema mismatch makes every downstream signal unreliable, so it suppresses the noise it causes rather than paging twice for one cause.",
+      "when": "MigrationStateMismatch",
+      "suppress": ["ApiAvailabilityDegraded", "ApiReadinessFailing", "QueueDelayHigh"]
+    },
+    {
+      "when": "UnsafeDatabaseRole",
+      "suppress": ["ApiReadinessFailing"]
+    },
+    {
+      "$comment": "Budget refusal STOPS work by design; the resulting queue growth is the symptom, not a second incident.",
+      "when": "BudgetRejections",
+      "suppress": ["QueueDelayHigh", "ProviderRetriesElevated"]
+    },
+    {
+      "when": "RateAdmissionRejections",
+      "suppress": ["RateAdmissionWaitHigh"]
+    }
+  ]
+}

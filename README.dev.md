@@ -84,6 +84,10 @@ packages/db         migrations (forward-only, hashed; 0004 = jobs workflow_id/id
                     sessions/api_keys, row-level security on every workspace-owned table plus the non-superuser
                     role yeonjae_app the application runs as, api_idempotency_keys, job control columns, the
                     append-only job_events log and exports), identity/session helpers, pool/transaction helpers,
+                    0007/0013/0014 = least privilege for the request-scoped role: append-only and immutable
+                    tables are INSERT/SELECT only, canon history keeps the UPDATE commit_delta needs but not
+                    DELETE, EXECUTE is never granted to PUBLIC, and future objects get narrow default
+                    privileges (ADR-0050),
                     typed repository over the canon
                     schema; canon.commit_delta / canon.rollback_latest are the only canon write paths;
                     retrieval.ts = accepted-only reads for context assembly
@@ -126,6 +130,36 @@ pnpm --filter @yeonjae/web dev                                    # http://127.0
 Same-origin is the default, so no CORS configuration is needed for the two-process local setup above when
 the web app proxies to the API. Serving them from different origins requires
 `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8080` and `YEONJAE_CORS_ORIGINS=http://127.0.0.1:3000`.
+
+## Shared enforcement, local retrieval and operational templates
+
+`YEONJAE_ENFORCEMENT_MODE` selects the worker's protection. It defaults to `shared`, which uses the
+database-backed `SharedBudget` and the PostgreSQL shared limiter (migration 0015). `isolated_test` is the
+only way to reach the in-process `MemoryBudget`, and an unrecognized value is a startup error rather than
+a silent downgrade — a `Map` of spend is not a budget once the worker runs twice.
+
+| Variable                   | Default  | Meaning                                                         |
+| -------------------------- | -------- | --------------------------------------------------------------- |
+| `YEONJAE_ENFORCEMENT_MODE` | `shared` | `shared` or `isolated_test`; fails closed on anything else      |
+| `YEONJAE_WORKER_ID`        | pid      | identifies this process on the concurrency leases it holds      |
+| `YEONJAE_RATE_MAX_WAIT_MS` | `0`      | bounded wait for shared rate admission; `0` refuses immediately |
+| `YEONJAE_SYNTHETIC_PORT`   | `8090`   | fixed port for the deterministic provider simulator             |
+
+`pnpm run synthetic:provider` starts the simulator on a fixed loopback port. It is a **test double** whose
+scenario header lets a caller choose failures, resets and late responses at will: never publish it to an
+untrusted network, and never read success against it as evidence about a real provider.
+
+Retrieval now has a deterministic local embedding backend (`@yeonjae/prose`, fixed 256 dimensions, no
+network and no downloaded model), versioned embedding sets with atomic activation and rollback
+(migration 0016), a project-scoped name/terminology thesaurus (migration 0017) and hybrid
+lexical+vector ranking. The embedder captures **lexical overlap, not meaning** — it exists so the
+pipeline can be built and tested deterministically, and it is not evidence of production retrieval
+quality.
+
+`deploy/` and `ops/` hold container, alert and dashboard templates. They are **statically validated and
+never executed**: no container runtime or monitoring system exists in this workspace. `pnpm test` runs
+`tools/validate-ops-templates.test.ts`, which parses them, walks the service graph and checks every metric
+and label against the observability registry, so a template cannot drift from a metric that exists.
 
 ## Rules of the road
 

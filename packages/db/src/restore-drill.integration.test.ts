@@ -85,6 +85,29 @@ run('B-4-3 disposable logical backup and restore drill', () => {
     'derived_rows_have_no_orphans',
     'sequences_do_not_collide',
     'rls_cross_workspace_isolation_enforced',
+    // Security metadata preserved through dump/restore (ADR-0050). Row counts and a matching checksum
+    // would all still pass if the restore had dropped a grant, re-enabled a disabled trigger, lost
+    // FORCE RLS on one table or handed EXECUTE back to PUBLIC.
+    'table_grants_preserved',
+    'sequence_grants_preserved',
+    'function_execute_grants_preserved',
+    'function_security_and_search_path_preserved',
+    'policy_definitions_preserved',
+    'rls_and_force_rls_preserved',
+    'trigger_definitions_and_enabled_state_preserved',
+    'table_owners_preserved',
+    'schema_privileges_preserved',
+    'app_role_remains_unprivileged',
+    'no_public_execute_after_restore',
+    // Security BEHAVIOUR in the restored database, as the real non-owner role. Metadata can look right
+    // while the restored database behaves wrongly, so the drill re-executes the legitimate append and
+    // every forbidden direct mutation rather than inferring them from the catalogue.
+    'restored_legitimate_audit_append_succeeds',
+    'restored_audit_update_refused',
+    'restored_audit_delete_refused',
+    'restored_job_event_update_refused',
+    'restored_canon_commit_delete_refused',
+    'restored_llm_call_cost_rewrite_refused',
     'logical_checksum_matches',
     'source_database_unchanged',
   ])('verified invariant %s on the restored database', (id) => {

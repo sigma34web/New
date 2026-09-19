@@ -14,18 +14,37 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import {
+  activateEmbeddingSetForOperator,
+  budgetReport,
+  BUDGET_SCOPE_KINDS,
   COST_DIMENSIONS,
   costSummary,
+  createAliasForOperator,
   createSession,
+  embeddingSetReport,
   entitiesOfType,
+  gcEligible,
   isTerminalStatus,
   jobControlOf,
   jobEventsAfter,
+  leaseOccupancy,
   listCommits,
   manuscriptVersionsOf,
   needsAttention,
+  OperatorMutationError,
+  OPERATOR_ALIAS_KINDS,
+  OPERATION_CLASSES,
+  rateLimitStatus as operatorRateLimitStatus,
+  queryString,
+  readiness,
+  dependencyReport,
+  mergeReadiness,
   requestJobControl,
+  retrievalDiagnostics,
   revokeSession,
+  rollbackEmbeddingSetForOperator,
+  setAliasActiveForOperator,
+  thesaurusListing,
   timelinesOf,
   verifyPassword,
   workspacesOf,
@@ -58,6 +77,9 @@ import {
 } from './export.js';
 import { requireVerb } from './verbs.js';
 import { registerResourceRoutes } from './resource-routes.js';
+import { registerProductRoutes } from './product-routes.js';
+import { contentHashOf } from '@yeonjae/prose';
+import type { LifecycleCoordinator } from '@yeonjae/domain';
 import {
   correct as correctCanonOp,
   correctionView,
@@ -116,6 +138,15 @@ export interface ApiOptions {
    * deployment that forgets to configure this is strict rather than broken.
    */
   readonly corsOrigins?: readonly string[] | undefined;
+  /**
+   * Process lifecycle coordinator (Workstream C).
+   *
+   * Injected rather than constructed here because the coordinator's whole purpose is to span the
+   * process: `main.ts` owns the signal handlers and the resources that must close, and a test needs to
+   * drive drain directly. When absent the API behaves exactly as before — always accepting, always
+   * ready — so the many suites that build an app without a lifecycle are unaffected.
+   */
+  readonly lifecycle?: LifecycleCoordinator | undefined;
 }
 
 /** Maximum JSON body. A bounded body is the cheapest defence against memory-exhaustion requests. */
@@ -152,6 +183,15 @@ export function buildApi(options: ApiOptions): FastifyInstance {
   // Validated at construction, so an invalid origin fails at startup naming the exact value rather than
   // being silently dropped into a deployment that denies everything and looks configured.
   const corsPolicy: CorsPolicy = corsPolicyFrom(options.corsOrigins ?? []);
+  const lifecycle = options.lifecycle;
+  /**
+   * Requests admitted by the drain gate, by request id.
+   *
+   * A SET rather than a counter so the release in `onResponse` is idempotent: Fastify can complete a
+   * request through several paths (normal reply, error reply, client disconnect), and a bare decrement
+   * would eventually drift below the true count and let a drain finish while work was still running.
+   */
+  const inFlight = new Set<string>();
 
   app.addHook('onRequest', async (req, reply) => {
     /**
@@ -194,6 +234,31 @@ export function buildApi(options: ApiOptions): FastifyInstance {
      */
     const route = req.routeOptions.url ?? 'unmatched';
     if (route === '/health' || route === '/ready' || route === '/metrics') return;
+
+    /**
+     * Drain gate (Workstream C).
+     *
+     * Placed after the probe exemption above and before authentication, because during a drain the
+     * answer must not depend on who is asking: a draining instance refuses NEW work from everyone,
+     * while probes keep answering so an orchestrator can still observe the transition.
+     *
+     * 503 with `retry-after` is the honest answer — the work was not attempted and retrying elsewhere
+     * (or here, later) will succeed. Requests already in flight are unaffected; they are exactly what
+     * the drain deadline exists to let finish.
+     */
+    if (lifecycle && !lifecycle.beginWork()) {
+      metrics.increment(METRIC.drainRefusals, METRIC_HELP[METRIC.drainRefusals] ?? '', {
+        state: lifecycle.current(),
+      });
+      reply.header('retry-after', '5');
+      throw new ApiError(
+        'SERVICE_DRAINING',
+        'This instance is shutting down and is not accepting new requests.',
+      );
+    }
+    // Counted as in-flight only once the gate admitted it; `onResponse` below releases it.
+    if (lifecycle) inFlight.add(req.id);
+
     const identity = clientIdentity(
       { socketAddress: req.ip, forwardedFor: headerOf(req, 'x-forwarded-for') },
       { trustedProxies },
@@ -217,6 +282,8 @@ export function buildApi(options: ApiOptions): FastifyInstance {
   app.addHook('onResponse', async (req, reply) => {
     const seen = observed.get(req.id);
     observed.delete(req.id);
+    // Release the drain slot exactly once, whatever path completed the request.
+    if (lifecycle && inFlight.delete(req.id)) lifecycle.endWork();
     const route = req.routeOptions.url ?? 'unmatched';
     const durationNs = seen ? Number(process.hrtime.bigint() - seen.startedAt) : 0;
     const durationMs = Math.round(durationNs / 1e6);
@@ -276,7 +343,20 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     return reply.status(204).send();
   });
 
-  app.get('/health', async () => ({ status: 'ok' }));
+  /**
+   * Liveness.
+   *
+   * Deliberately NOT readiness: a draining process is still alive and must keep saying so, or an
+   * orchestrator would kill it mid-request instead of letting it finish. It reports `stopping` while
+   * draining — informative without ever becoming the signal to terminate — and only a stopped process
+   * fails liveness.
+   */
+  app.get('/health', async (_req, reply) => {
+    if (!lifecycle) return { status: 'ok', state: 'running' };
+    const state = lifecycle.current();
+    if (!lifecycle.live()) return reply.status(503).send({ status: 'stopped', state });
+    return { status: 'ok', state: state === 'draining' ? 'stopping' : state };
+  });
 
   /**
    * Prometheus metrics.
@@ -293,20 +373,62 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     reply.type('text/plain; version=0.0.4; charset=utf-8').send(metrics.render()),
   );
   app.get('/ready', async (_req, reply) => {
-    try {
-      await pool.query('SELECT 1');
-      return { status: 'ready' };
-    } catch {
-      // Never echo the database error: readiness is a boolean to a load balancer, not a diagnostic channel.
-      return reply.status(503).type(PROBLEM_CONTENT_TYPE).send({
-        type: 'urn:yeonjae:error:INTERNAL_ERROR',
-        title: 'Not ready',
-        status: 503,
-        detail: 'The database is not reachable.',
-        code: 'INTERNAL_ERROR',
-        request_id: _req.id,
-      });
+    /**
+     * Draining fails readiness IMMEDIATELY and without touching the database.
+     *
+     * Checked before the dependency probe on purpose: the answer during a drain is already decided, and
+     * a probe that first waited on a query would widen exactly the window in which a load balancer can
+     * still route new work into a process that is shutting down.
+     */
+    if (lifecycle && !lifecycle.ready()) {
+      return reply.status(503).send({ status: 'draining', state: lifecycle.current(), checks: [] });
     }
+    /**
+     * Readiness is more than "the pool can reach a database".
+     *
+     * `SELECT 1` passes against a database that is behind on migrations, ahead of this build, carrying a
+     * tampered ledger, or whose application role has quietly been granted BYPASSRLS — and in every one
+     * of those states this instance must NOT take traffic, because the failure would otherwise surface
+     * as a broken request or, worse, as silently absent tenant isolation.
+     *
+     * The check list is returned so an operator can see WHICH dependency is unhappy. It carries no
+     * credential, no connection string and no tenant data (asserted in the db package's tests).
+     */
+    const report = await readiness(pool);
+    /**
+     * Per-dependency states, merged into the verdict.
+     *
+     * `readiness()` stays the authority on schema and role state — that is the contract the load
+     * balancer was built on — and the dependency report ADDS per-component states with their declared
+     * requiredness. The verdict is the AND of the two, so this can only make readiness stricter: a
+     * required component that is unavailable now fails, and an optional one that is degraded or
+     * intentionally disabled reports `degraded` without taking the instance out of service.
+     */
+    const deps = await dependencyReport({
+      db: pool,
+      self: 'api',
+      lifecycle: lifecycle?.current() ?? 'running',
+      metrics,
+    });
+    const verdict = mergeReadiness(report, deps);
+    if (verdict.ready) {
+      return {
+        status: verdict.degraded ? 'degraded' : 'ready',
+        checks: report.checks,
+        // Names, states and safe explanations only: the same bounded shape the checks already use.
+        dependencies: deps.components,
+      };
+    }
+    return reply.status(503).type(PROBLEM_CONTENT_TYPE).send({
+      type: 'urn:yeonjae:error:INTERNAL_ERROR',
+      title: 'Not ready',
+      status: 503,
+      detail: 'One or more readiness checks failed.',
+      code: 'INTERNAL_ERROR',
+      request_id: _req.id,
+      checks: report.checks,
+      dependencies: deps.components,
+    });
   });
 
   // ---- authentication -------------------------------------------------------------------------------
@@ -1211,6 +1333,13 @@ export function buildApi(options: ApiOptions): FastifyInstance {
             requestId: req.id,
             detail: { applied: result.applied, reason: result.reason ?? null },
           });
+          // Counted with the same truthfulness the response carries: a refused control is an
+          // `applied=false` outcome, not an absence of signal.
+          metrics.increment(METRIC.jobControl, METRIC_HELP[METRIC.jobControl] ?? '', {
+            // `action` is validated against a closed list above, so it is already bounded.
+            control: action,
+            outcome: result.applied ? 'applied' : 'refused',
+          });
           return {
             // A refused request is reported truthfully rather than as a silent success: the client is
             // told the job is terminal / not paused / already requested, and can act on it.
@@ -1246,6 +1375,7 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     // foreign job produces a normal problem document instead of a half-open event stream.
     await inScope(pool, scope, async (c) => jobRowOr404(c, jobId));
 
+    metrics.increment(METRIC.sseConnections, METRIC_HELP[METRIC.sseConnections] ?? '');
     reply.raw.writeHead(200, { ...SSE_HEADERS, 'x-request-id': req.id });
     const sink: SseSink = {
       write: (chunk) => {
@@ -1264,6 +1394,16 @@ export function buildApi(options: ApiOptions): FastifyInstance {
         inScope(pool, scope, async (c) => jobEventsAfter(c, { jobId, afterSeq, limit })),
     });
     if (!sink.isClosed()) reply.raw.end();
+    // `parseLastEventId` returns 0 when the client sent no cursor, so a REPLAY is `fromSeq > 0` --
+    // an undefined check is always true here and would count every fresh stream as a replay.
+    if (fromSeq > 0) {
+      metrics.increment(
+        METRIC.sseReplays,
+        METRIC_HELP[METRIC.sseReplays] ?? '',
+        {},
+        result.delivered,
+      );
+    }
     req.log.debug({ request_id: req.id, ...result }, 'sse stream finished');
     return reply;
   });
@@ -1280,6 +1420,313 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     const status = await workflowStatus(pool, workflowIdFor(projectId, chapterNo));
     return status;
   });
+
+  // ---- operator diagnostics and controls (Workstream A) ---------------------------------------------
+  //
+  // These routes are a thin adapter over `operator.ts`, which is the SAME application layer the
+  // `operator:*` CLI commands call. Keeping one layer under both surfaces is what stops the CLI and the
+  // API from answering the same operational question differently.
+  //
+  // Role policy, applied uniformly below:
+  //   * a diagnostic is a READ and requires `viewer`;
+  //   * embedding-set activation and rollback change what every subsequent retrieval reads, and the
+  //     thesaurus mutations change how queries resolve, so all of them require `owner` and are AUDITED.
+  //
+  // Scope never comes from the payload. Every route derives the workspace from the authenticated
+  // principal and resolves the project through `projectOr404` inside the RLS scope FIRST, so a project id
+  // from another workspace is a 404 before any service sees it.
+
+  app.get('/v1/operator/rate-limits', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const query = req.query as Record<string, unknown>;
+    const operationClass = requireEnum(
+      (query.operation_class as string | undefined) ?? 'provider_call',
+      OPERATION_CLASSES,
+      'query.operation_class',
+    );
+    const projectId = queryString(query.project_id)
+      ? requireUuid(queryString(query.project_id), 'query.project_id')
+      : undefined;
+    return inScope(pool, scope, async (c) => {
+      if (projectId) await projectOr404(c, projectId);
+      return operatorRateLimitStatus(c, {
+        workspaceId: scope.workspaceId,
+        projectId,
+        operationClass,
+      });
+    });
+  });
+
+  app.get('/v1/operator/leases', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const query = req.query as Record<string, unknown>;
+    const projectId = queryString(query.project_id)
+      ? requireUuid(queryString(query.project_id), 'query.project_id')
+      : undefined;
+    return inScope(pool, scope, async (c) => {
+      if (projectId) await projectOr404(c, projectId);
+      return leaseOccupancy(c, { projectId, limit: query.limit });
+    });
+  });
+
+  app.get('/v1/operator/budgets', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const query = req.query as Record<string, unknown>;
+    const scopeKind = requireEnum(
+      (query.scope_kind as string | undefined) ?? 'workspace',
+      BUDGET_SCOPE_KINDS,
+      'query.scope_kind',
+    );
+    // A workspace-scoped budget is ALWAYS the caller's own workspace, taken from the auth context. A
+    // project-scoped one must name a project that is visible in that scope. Neither accepts an arbitrary
+    // scope id from the query, which is what stops this route from reading another tenant's budget.
+    return inScope(pool, scope, async (c) => {
+      if (scopeKind === 'workspace')
+        return budgetReport(c, { scopeKind, scopeId: scope.workspaceId });
+      const projectId = requireUuid(queryString(query.project_id), 'query.project_id');
+      await projectOr404(c, projectId);
+      return budgetReport(c, { scopeKind: 'project', scopeId: projectId });
+    });
+  });
+
+  app.get('/v1/projects/:projectId/operator/embedding-set', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    return inScope(pool, scope, async (c) => {
+      await projectOr404(c, projectId);
+      return embeddingSetReport(c, { projectId, hashOf: contentHashOf });
+    });
+  });
+
+  app.get('/v1/projects/:projectId/operator/embedding-sets/gc-eligible', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    const query = req.query as Record<string, unknown>;
+    return inScope(pool, scope, async (c) => {
+      await projectOr404(c, projectId);
+      return gcEligible(c, { projectId, keep: Number(query.keep ?? 1), limit: query.limit });
+    });
+  });
+
+  app.get('/v1/projects/:projectId/operator/thesaurus', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    const query = req.query as Record<string, unknown>;
+    return inScope(pool, scope, async (c) => {
+      await projectOr404(c, projectId);
+      return thesaurusListing(c, {
+        projectId,
+        limit: query.limit,
+        includeInactive: query.include_inactive === 'true',
+      });
+    });
+  });
+
+  app.get('/v1/projects/:projectId/operator/retrieval', async (req) => {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'viewer');
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    const query = req.query as Record<string, unknown>;
+    const q = requireString(query, 'q', { max: 500 });
+    return inScope(pool, scope, async (c) => {
+      await projectOr404(c, projectId);
+      return retrievalDiagnostics(c, { projectId, query: q, limit: query.limit });
+    });
+  });
+
+  // ---- operator mutations (Workstream B) -------------------------------------------------------------
+  //
+  // Every route below changes what the system does next, so all of them share one policy:
+  //
+  //   * OWNER ONLY. Activating an embedding set changes what every subsequent retrieval reads, and a
+  //     thesaurus edit changes how queries resolve. Those are the same class of consequence as a canon
+  //     rollback, which is already owner-gated.
+  //   * AUDITED, on success and on refusal. A refused mutation is exactly as interesting as a successful
+  //     one when reconstructing what an operator attempted, so both append to `audit_log`. The detail is
+  //     the SAFE payload the service layer returns, never raw error text.
+  //   * SCOPE FROM THE AUTH CONTEXT. The project is resolved through `projectOr404` inside the RLS scope
+  //     before any service sees it, so a cross-tenant id is a 404 rather than a refusal that confirms it.
+  //   * ONE TRANSACTION where the mutation and its audit row must agree. `inScope` runs both against the
+  //     same scoped client, so an audit row cannot survive a rolled-back mutation.
+
+  /** Map the service layer's closed code set onto problem documents. */
+  function operatorProblem(err: unknown): never {
+    if (err instanceof OperatorMutationError) {
+      if (err.code === 'NOT_FOUND') throw new ApiError('NOT_FOUND', err.message);
+      if (err.code === 'ALIAS_INVALID') throw new ApiError('VALIDATION_FAILED', err.message);
+      // Everything else is a precondition the caller can resolve and retry: 409, not 500.
+      throw new ApiError('CONFLICT', err.message, { data: { reason: err.code } });
+    }
+    throw err;
+  }
+
+  /**
+   * Run an owner-gated mutation, auditing both outcomes.
+   *
+   * The refusal audit is written in its OWN transaction, because the mutation's transaction is being
+   * rolled back — writing the refusal inside it would roll the evidence back too, which is precisely
+   * when an audit trail matters most.
+   */
+  async function operatorMutation<T>(
+    req: FastifyRequest,
+    action: string,
+    projectId: string,
+    run: (
+      c: Client,
+      scope: WorkspaceScope,
+    ) => Promise<{ result: T; audit: Readonly<Record<string, unknown>> }>,
+  ): Promise<T> {
+    const scope = await scoped(pool, req);
+    requireRole(scope, 'owner');
+    try {
+      return await inScope(pool, scope, async (c) => {
+        await projectOr404(c, projectId);
+        // `scope` is passed through rather than re-resolved inside the callback: calling `scoped`
+        // again here would take a SECOND connection from the pool while this one is held, which
+        // deadlocks a small pool and surfaced as a 500.
+        const outcome = await run(c, scope);
+        await audit(c, scope, {
+          action,
+          projectId,
+          targetKind: 'operator',
+          requestId: req.id,
+          detail: { outcome: 'succeeded', ...outcome.audit },
+        });
+        return outcome.result;
+      });
+    } catch (err) {
+      if (err instanceof OperatorMutationError) {
+        await inScope(pool, scope, async (c) => {
+          await audit(c, scope, {
+            action,
+            projectId,
+            targetKind: 'operator',
+            requestId: req.id,
+            // The CODE only: raw error text could carry detail that does not belong in an audit row.
+            detail: { outcome: 'refused', reason: err.code },
+          });
+        });
+      }
+      return operatorProblem(err);
+    }
+  }
+
+  app.post(
+    '/v1/projects/:projectId/operator/embedding-sets/:setId/activate',
+    async (req, reply) => {
+      const params = req.params as { projectId?: string; setId?: string };
+      const projectId = requireUuid(params.projectId, 'params.projectId');
+      const setId = requireUuid(params.setId, 'params.setId');
+      const result = await operatorMutation(
+        req,
+        'operator.embedding_set.activate',
+        projectId,
+        (c) => activateEmbeddingSetForOperator(c, { projectId, setId }),
+      );
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.post('/v1/projects/:projectId/operator/embedding-sets/rollback', async (req, reply) => {
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    const result = await operatorMutation(req, 'operator.embedding_set.rollback', projectId, (c) =>
+      rollbackEmbeddingSetForOperator(c, { projectId }),
+    );
+    return reply.status(200).send(result);
+  });
+
+  app.post('/v1/projects/:projectId/operator/thesaurus', async (req, reply) => {
+    const projectId = requireUuid(
+      (req.params as { projectId?: string }).projectId,
+      'params.projectId',
+    );
+    const result = await operatorMutation(
+      req,
+      'operator.thesaurus.create',
+      projectId,
+      async (c, scope) => {
+        /**
+         * Body validation happens INSIDE the authorized callback.
+         *
+         * Validating before `operatorMutation` authenticated the caller meant an anonymous request with
+         * a malformed body got 422 — telling an unauthenticated stranger about the request schema, and
+         * answering something other than "who are you?" to a request that had no business being parsed.
+         */
+        const body = asObject(req.body);
+        const surface = requireString(body, 'surface', { max: 200 });
+        const kind = requireEnum(body.kind ?? 'alias', OPERATOR_ALIAS_KINDS, 'body.kind');
+        const entityId = body.entity_id
+          ? requireUuid(queryString(body.entity_id), 'body.entity_id')
+          : undefined;
+        // The entity must be visible in THIS project: an alias pointing at another project's entity
+        // would be a cross-project write dressed up as a thesaurus edit.
+        if (entityId) {
+          const found = await c.query<{ id: string }>(
+            'SELECT id FROM entities WHERE id = $1 AND project_id = $2',
+            [entityId, projectId],
+          );
+          if (!found.rows[0])
+            throw new OperatorMutationError('NOT_FOUND', 'The entity does not exist.');
+        }
+        return createAliasForOperator(c, {
+          workspaceId: scope.workspaceId,
+          projectId,
+          surface,
+          kind,
+          entityId,
+        });
+      },
+    );
+    return reply.status(201).send(result);
+  });
+
+  app.post(
+    '/v1/projects/:projectId/operator/thesaurus/:aliasId/:aliasAction',
+    async (req, reply) => {
+      const params = req.params as { projectId?: string; aliasId?: string; aliasAction?: string };
+      const projectId = requireUuid(params.projectId, 'params.projectId');
+      /**
+       * The action is parsed BEFORE the mutation runs because it names the audit action, but the alias id
+       * is validated inside the authorized callback for the same reason the body is: an unauthenticated
+       * caller must be told "who are you?", not "your id is malformed".
+       */
+      const action = requireEnum(
+        params.aliasAction,
+        ['deactivate', 'reactivate'] as const,
+        'params.aliasAction',
+      );
+      const result = await operatorMutation(req, `operator.thesaurus.${action}`, projectId, (c) => {
+        const aliasId = requireUuid(params.aliasId, 'params.aliasId');
+        return setAliasActiveForOperator(c, {
+          projectId,
+          aliasId,
+          active: action === 'reactivate',
+        });
+      });
+      return reply.status(200).send(result);
+    },
+  );
 
   // ---- exports (accepted content only) --------------------------------------------------------------
   app.get('/v1/projects/:projectId/exports/preview', async (req) => {
@@ -1372,8 +1819,16 @@ export function buildApi(options: ApiOptions): FastifyInstance {
                 detail: { format, status: 'failed', code: wf.code ?? 'INTERNAL' },
               });
             });
+            metrics.increment(METRIC.exports, METRIC_HELP[METRIC.exports] ?? '', {
+              format,
+              status: 'failed',
+            });
             throw err;
           }
+          metrics.increment(METRIC.exports, METRIC_HELP[METRIC.exports] ?? '', {
+            format,
+            status: 'ready',
+          });
           const row = await persistExport(c, {
             workspaceId: scope.workspaceId,
             projectId,
@@ -1463,6 +1918,19 @@ export function buildApi(options: ApiOptions): FastifyInstance {
     audit,
     pageOf,
     headerOf,
+  });
+
+  // The credential-free product surfaces (dependency status, preview, quality checks, export
+  // preparation, batches) follow the same pattern and share the same helpers.
+  registerProductRoutes(app, {
+    pool,
+    scoped: (req) => scoped(pool, req),
+    inScope: (scope, fn) => inScope(pool, scope, fn),
+    projectOr404,
+    audit,
+    headerOf,
+    metrics,
+    lifecycle,
   });
 
   return app;

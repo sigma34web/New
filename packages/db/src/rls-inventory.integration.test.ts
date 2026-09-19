@@ -50,6 +50,14 @@ const ISOLATED_THROUGH_PARENT = [
   'promise_events',
   'promise_evidence',
   'proposition_truths',
+  // Migration 0015's rate-limit counters. They are keyed by policy and an opaque scope key rather than
+  // by workspace, because a provider-wide limit belongs to no single tenant: it constrains them all, and
+  // its counters have to be shared for the limit to mean anything. Isolation therefore chains to
+  // `rate_limit_policies`, whose own policy keeps a workspace-scoped row private while leaving a global
+  // row visible. The scope key never contains customer content — it is workspace id / provider / model.
+  'rate_limit_windows',
+  'rate_limit_admissions',
+  'rate_limit_slots',
 ] as const;
 
 /**

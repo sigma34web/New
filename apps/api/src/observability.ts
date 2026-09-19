@@ -294,146 +294,19 @@ export function traceIdFrom(traceparent: string | undefined): string | undefined
 // metrics
 // ---------------------------------------------------------------------------------------------------------
 
-export type MetricKind = 'counter' | 'histogram';
-
-interface MetricSeries {
-  readonly kind: MetricKind;
-  readonly help: string;
-  /** Counter total, or histogram sum, keyed by serialized labels. */
-  readonly values: Map<string, { sum: number; count: number; buckets: Map<number, number> }>;
-}
-
-/** Latency buckets in seconds, matching the plan's `llm_latency_seconds` histogram intent. */
-const BUCKETS: readonly number[] = [0.01, 0.05, 0.1, 0.5, 1, 5, 30, 300];
-
 /**
- * An in-process metric registry.
+ * The metric registry now lives in `@yeonjae/domain` so every package can emit.
  *
- * Scope is stated plainly because it is a real limitation, not an implementation detail: these are
- * per-process counters. They reset on restart and are per-instance, so a multi-instance deployment needs a
- * scraper that aggregates across instances (which is how Prometheus works anyway). Nothing here claims to
- * be a distributed counter.
+ * Re-exported here rather than moved outright: `apps/api` was the registry's original home and every
+ * existing import path stays valid, which keeps this change to the mechanism rather than the callers.
  */
-export class Metrics {
-  private readonly series = new Map<string, MetricSeries>();
-
-  /** Register (idempotently) and return a series. */
-  private seriesFor(name: string, kind: MetricKind, help: string): MetricSeries {
-    const existing = this.series.get(name);
-    if (existing) return existing;
-    const created: MetricSeries = { kind, help, values: new Map() };
-    this.series.set(name, created);
-    return created;
-  }
-
-  /**
-   * Serialize labels deterministically.
-   *
-   * Label VALUES are passed through `safeValue` and bounded, because a label is rendered into the metrics
-   * endpoint's text output: an unbounded value there is both a cardinality explosion and a leak channel.
-   */
-  private static labelKey(labels: Readonly<Record<string, string>>): string {
-    const entries = Object.entries(labels)
-      .filter(([k]) => isLoggableKey(k))
-      .map(([k, v]) => [k, v.slice(0, 80)] as const)
-      .sort((a, b) => a[0].localeCompare(b[0]));
-    return entries.map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(',');
-  }
-
-  increment(
-    name: string,
-    help: string,
-    labels: Readonly<Record<string, string>> = {},
-    by = 1,
-  ): void {
-    const s = this.seriesFor(name, 'counter', help);
-    const key = Metrics.labelKey(labels);
-    const cur = s.values.get(key);
-    s.values.set(key, {
-      sum: (cur?.sum ?? 0) + by,
-      count: (cur?.count ?? 0) + 1,
-      buckets: cur?.buckets ?? new Map<number, number>(),
-    });
-  }
-
-  observe(
-    name: string,
-    help: string,
-    seconds: number,
-    labels: Readonly<Record<string, string>> = {},
-  ): void {
-    const s = this.seriesFor(name, 'histogram', help);
-    const key = Metrics.labelKey(labels);
-    const cur = s.values.get(key);
-    const buckets = new Map<number, number>(cur?.buckets ?? []);
-    for (const b of BUCKETS) if (seconds <= b) buckets.set(b, (buckets.get(b) ?? 0) + 1);
-    s.values.set(key, {
-      sum: (cur?.sum ?? 0) + seconds,
-      count: (cur?.count ?? 0) + 1,
-      buckets,
-    });
-  }
-
-  /** Read one counter total, for tests and for readiness reporting. */
-  total(name: string, labels: Readonly<Record<string, string>> = {}): number {
-    return this.series.get(name)?.values.get(Metrics.labelKey(labels))?.sum ?? 0;
-  }
-
-  /** Render Prometheus text format. Contains only metric names, safe labels and numbers. */
-  render(): string {
-    const lines: string[] = [];
-    for (const [name, s] of [...this.series.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      lines.push(`# HELP ${name} ${s.help}`);
-      lines.push(`# TYPE ${name} ${s.kind}`);
-      for (const [key, v] of [...s.values.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-        const labelPart = key ? `{${key}}` : '';
-        if (s.kind === 'counter') {
-          lines.push(`${name}${labelPart} ${v.sum}`);
-          continue;
-        }
-        for (const b of BUCKETS) {
-          const inner = key ? `${key},le="${b}"` : `le="${b}"`;
-          lines.push(`${name}_bucket{${inner}} ${v.buckets.get(b) ?? 0}`);
-        }
-        const infInner = key ? `${key},le="+Inf"` : 'le="+Inf"';
-        lines.push(`${name}_bucket{${infInner}} ${v.count}`);
-        lines.push(`${name}_sum${labelPart} ${v.sum}`);
-        lines.push(`${name}_count${labelPart} ${v.count}`);
-      }
-    }
-    return `${lines.join('\n')}\n`;
-  }
-}
-
-/** The metric names this system records, named once so producers and dashboards cannot drift apart. */
-export const METRIC = {
-  requests: 'yeonjae_http_requests_total',
-  requestLatency: 'yeonjae_http_request_duration_seconds',
-  authFailures: 'yeonjae_auth_failures_total',
-  rateLimited: 'yeonjae_rate_limited_total',
-  canonCommits: 'yeonjae_canon_commits_total',
-  leaseLoss: 'yeonjae_lease_loss_total',
-  jobControl: 'yeonjae_job_control_total',
-  sseConnections: 'yeonjae_sse_connections_total',
-  sseReplays: 'yeonjae_sse_replayed_events_total',
-  exports: 'yeonjae_exports_total',
-  budgetBlocks: 'yeonjae_budget_blocks_total',
-  providerAttempts: 'yeonjae_provider_attempts_total',
-  corsDenied: 'yeonjae_cors_denied_total',
-} as const;
-
-export const METRIC_HELP: Readonly<Record<string, string>> = {
-  [METRIC.requests]: 'HTTP requests by route, method and status class.',
-  [METRIC.requestLatency]: 'HTTP request duration in seconds by route.',
-  [METRIC.authFailures]: 'Authentication and authorization failures by code.',
-  [METRIC.rateLimited]: 'Requests refused by a rate limit, by scope.',
-  [METRIC.canonCommits]: 'Canon commits by source.',
-  [METRIC.leaseLoss]: 'Lease-loss refusals by reason.',
-  [METRIC.jobControl]: 'Job control requests by control and outcome.',
-  [METRIC.sseConnections]: 'SSE job-event streams opened.',
-  [METRIC.sseReplays]: 'Job events replayed from a Last-Event-ID.',
-  [METRIC.exports]: 'Export requests by format and status.',
-  [METRIC.budgetBlocks]: 'Calls refused by the budget guard.',
-  [METRIC.providerAttempts]: 'Provider attempts by model class and status.',
-  [METRIC.corsDenied]: 'Cross-origin requests refused by the origin allowlist.',
-};
+export {
+  BUCKETS,
+  isMetricLabel,
+  METRIC,
+  METRIC_HELP,
+  METRIC_LABEL_OTHER,
+  Metrics,
+  safeLabelValue,
+  type MetricKind,
+} from '@yeonjae/domain';

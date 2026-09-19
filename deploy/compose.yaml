@@ -1,0 +1,151 @@
+# Local production-like topology (Phase 4 automated readiness).
+#
+# HONEST SCOPE: NEVER EXECUTED. No container runtime exists in the workspace where this was written, so
+# this file is statically validated only — YAML parse, service graph, dependency conditions, environment
+# references, health checks, exposed ports and a secret scan. It is a reviewed starting point, and
+# running it is external work.
+#
+# Two decisions shape it:
+#   * NOTHING IS EXPOSED TO THE HOST EXCEPT THE API. Postgres, Temporal and the synthetic provider are
+#     reachable only on the internal network, because a development stack that publishes its database is
+#     one firewall mistake away from being reachable.
+#   * NO CREDENTIAL HAS A USEFUL DEFAULT. Every secret-shaped value is an `${VAR:?...}` reference that
+#     fails the run when unset. A convenient default is how a development password becomes a production
+#     password.
+
+name: yeonjae
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-yeonjae}
+    # Durable, so a restart does not silently discard the canon the rest of the stack assumes exists.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:1.25
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_SEEDS: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    healthcheck:
+      test: ['CMD', 'tctl', '--address', 'temporal:7233', 'cluster', 'health']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Migrations run as a JOB, not as a step inside the API's startup: two API replicas racing the same
+  # migration is a corrupted ledger, and `restart: "no"` is what makes this run once and stop.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime
+    # The CLI's existing db:migrate command; no new entry point was invented for this.
+    command: ['pnpm', 'run', 'cli', 'db:migrate']
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    restart: 'no'
+
+  synthetic-provider:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime
+    command: ['pnpm', 'run', 'synthetic:provider']
+    environment:
+      YEONJAE_SYNTHETIC_PORT: '8090'
+    # Not published to the host: a deterministic simulator is a test double, and exposing it invites
+    # somebody to point something real at it.
+    networks: [internal]
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      YEONJAE_PROVIDER_MODE: ${YEONJAE_PROVIDER_MODE:-replay}
+      YEONJAE_ENFORCEMENT_MODE: shared
+      PORT: '8080'
+    # The only host-published port in the stack.
+    ports:
+      - '${API_PORT:-8080}:8080'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+    # Long enough to drain in-flight requests, short enough to bound a deploy.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime
+    command: ['pnpm', '--filter', '@yeonjae/worker', 'start']
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      TEMPORAL_ADDRESS: temporal:7233
+      # No default that reaches a paid provider, and shared enforcement is not optional here.
+      YEONJAE_PROVIDER_MODE: ${YEONJAE_PROVIDER_MODE:?set YEONJAE_PROVIDER_MODE}
+      YEONJAE_ENFORCEMENT_MODE: shared
+      YEONJAE_REPLAY_FILE: ${YEONJAE_REPLAY_FILE:-/app/examples/fixture/ch01/replay.ch01.json}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_healthy
+    networks: [internal]
+    # Two replicas by default, because the shared limiter and shared budget only earn their keep when
+    # the worker runs more than once — and a single-replica default would hide a regression to
+    # per-process protection.
+    deploy:
+      replicas: 2
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:

@@ -28,6 +28,7 @@ export type ProblemCode =
   | 'IDEMPOTENT_REQUEST_IN_PROGRESS'
   | 'INVALID_CURSOR'
   | 'RATE_LIMITED'
+  | 'SERVICE_DRAINING'
   | 'PAYLOAD_TOO_LARGE'
   | 'NOT_IMPLEMENTED_IN_TIER'
   | 'CONFLICT'
@@ -60,6 +61,7 @@ const TITLES: Record<ProblemCode, string> = {
   IDEMPOTENT_REQUEST_IN_PROGRESS: 'An identical request is already in progress',
   INVALID_CURSOR: 'Invalid cursor',
   RATE_LIMITED: 'Too many requests',
+  SERVICE_DRAINING: 'Service is draining',
   PAYLOAD_TOO_LARGE: 'Request body too large',
   NOT_IMPLEMENTED_IN_TIER: 'Not implemented in this tier',
   CONFLICT: 'Conflict',
@@ -135,6 +137,8 @@ const STATUS: Partial<Record<ProblemCode, number>> = {
   PATCH_REGRESSED: 409,
   INVALID_CURSOR: 400,
   RATE_LIMITED: 429,
+  // 503: the work was NOT attempted and the same request will succeed on a healthy instance.
+  SERVICE_DRAINING: 503,
   PAYLOAD_TOO_LARGE: 413,
   NOT_IMPLEMENTED_IN_TIER: 501,
   MODEL_CALL_FAILED: 502,

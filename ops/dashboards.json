@@ -1,0 +1,244 @@
+{
+  "$comment": "Provider-neutral dashboard definitions (Phase 4 automated readiness). NOT DEPLOYED: nothing renders these. Every `metric` is validated against METRIC and every label against the metric label allowlist, so a panel cannot reference a series that does not exist. Deliberately absent from every panel: workspace, project, job and request identifiers — /metrics is unauthenticated, and a per-tenant panel would require publishing tenant ids.",
+  "version": "1.0.0",
+  "dashboards": [
+    {
+      "name": "Service health",
+      "panels": [
+        {
+          "title": "Request rate by route",
+          "metric": "yeonjae_http_requests_total",
+          "labels": ["route", "status_class"]
+        },
+        {
+          "title": "Latency p50/p95/p99",
+          "metric": "yeonjae_http_request_duration_seconds",
+          "labels": ["route"]
+        },
+        {
+          "title": "Readiness failures",
+          "metric": "yeonjae_readiness_failures_total",
+          "labels": ["check"]
+        },
+        { "title": "Auth failures", "metric": "yeonjae_auth_failures_total", "labels": ["code"] },
+        {
+          "title": "Database pool saturation",
+          "metric": "yeonjae_db_pool_saturation_total",
+          "labels": ["component"]
+        }
+      ]
+    },
+    {
+      "name": "Production pipeline",
+      "panels": [
+        {
+          "title": "Workflow transitions",
+          "metric": "yeonjae_workflow_state_transitions_total",
+          "labels": ["state"]
+        },
+        {
+          "title": "Activity attempts",
+          "metric": "yeonjae_activity_attempts_total",
+          "labels": ["activity", "outcome"]
+        },
+        { "title": "Queue depth", "metric": "yeonjae_queue_depth", "labels": ["kind"] },
+        { "title": "Canon commits", "metric": "yeonjae_canon_commits_total", "labels": ["source"] },
+        {
+          "title": "Lease loss and fencing",
+          "metric": "yeonjae_stale_worker_rejections_total",
+          "labels": ["reason"]
+        }
+      ]
+    },
+    {
+      "name": "Provider and spend",
+      "panels": [
+        {
+          "title": "Provider attempts",
+          "metric": "yeonjae_provider_attempts_total",
+          "labels": ["provider", "model_class", "status"]
+        },
+        { "title": "Retries", "metric": "yeonjae_provider_retries_total", "labels": ["reason"] },
+        { "title": "Repairs", "metric": "yeonjae_provider_repairs_total", "labels": ["reason"] },
+        {
+          "title": "Fallbacks",
+          "metric": "yeonjae_provider_fallbacks_total",
+          "labels": ["reason"]
+        },
+        {
+          "title": "Budget reservations",
+          "metric": "yeonjae_budget_reservations_total",
+          "labels": ["scope_kind", "outcome"]
+        },
+        {
+          "title": "Settlements",
+          "metric": "yeonjae_budget_settlements_total",
+          "labels": ["scope_kind", "outcome"]
+        },
+        {
+          "$comment": "Foregrounded on purpose: an unknown-cost settlement means the spend number understates reality, and a hidden panel would let that accumulate unnoticed.",
+          "title": "Unknown-cost settlements",
+          "metric": "yeonjae_unknown_cost_settlements_total",
+          "labels": ["scope_kind"]
+        }
+      ]
+    },
+    {
+      "name": "Shared enforcement",
+      "panels": [
+        {
+          "title": "Rate admission decisions",
+          "metric": "yeonjae_rate_admission_total",
+          "labels": ["operation_class", "reason"]
+        },
+        {
+          "title": "Admission wait",
+          "metric": "yeonjae_rate_admission_wait_seconds",
+          "labels": ["operation_class"]
+        },
+        {
+          "title": "Concurrency acquired",
+          "metric": "yeonjae_concurrency_acquired_total",
+          "labels": ["provider"]
+        },
+        {
+          "title": "Concurrency saturation",
+          "metric": "yeonjae_concurrency_saturated_total",
+          "labels": ["provider"]
+        },
+        {
+          "title": "Lease expirations",
+          "metric": "yeonjae_lease_expired_total",
+          "labels": ["reason"]
+        },
+        {
+          "title": "Reservation expirations",
+          "metric": "yeonjae_budget_reservations_expired_total",
+          "labels": ["scope_kind"]
+        }
+      ]
+    },
+    {
+      "name": "Cancellation",
+      "panels": [
+        {
+          "title": "Cancellation requests",
+          "metric": "yeonjae_cancellation_requests_total",
+          "labels": ["source"]
+        },
+        {
+          "title": "Observations by phase",
+          "metric": "yeonjae_cancellation_observations_total",
+          "labels": ["phase"]
+        },
+        {
+          "$comment": "A real provider is the only thing that can move this off `unknown`; a simulator cannot.",
+          "title": "Remote cancellation state",
+          "metric": "yeonjae_remote_cancellation_total",
+          "labels": ["state"]
+        },
+        {
+          "title": "Late responses",
+          "metric": "yeonjae_late_responses_total",
+          "labels": ["outcome"]
+        },
+        {
+          "title": "Discarded artifacts",
+          "metric": "yeonjae_discarded_artifacts_total",
+          "labels": ["reason"]
+        }
+      ]
+    },
+    {
+      "name": "Retrieval",
+      "panels": [
+        {
+          "title": "Embeddings generated",
+          "metric": "yeonjae_embeddings_generated_total",
+          "labels": ["backend", "outcome"]
+        },
+        {
+          "title": "Set activations and rollbacks",
+          "metric": "yeonjae_embedding_set_activations_total",
+          "labels": ["outcome"]
+        },
+        {
+          "title": "Retrieval latency",
+          "metric": "yeonjae_retrieval_duration_seconds",
+          "labels": ["mode"]
+        },
+        {
+          "title": "Result counts",
+          "metric": "yeonjae_retrieval_results_total",
+          "labels": ["mode"]
+        },
+        {
+          "title": "Thesaurus expansions",
+          "metric": "yeonjae_thesaurus_expansions_total",
+          "labels": ["kind"]
+        }
+      ]
+    },
+    {
+      "name": "Recovery and credentials",
+      "panels": [
+        {
+          "title": "Backup outcomes",
+          "metric": "yeonjae_backup_outcomes_total",
+          "labels": ["outcome"]
+        },
+        {
+          "title": "Restore drill outcomes",
+          "metric": "yeonjae_restore_outcomes_total",
+          "labels": ["outcome"]
+        },
+        {
+          "title": "Credential rotations",
+          "metric": "yeonjae_credential_rotations_total",
+          "labels": ["kind", "outcome"]
+        },
+        {
+          "title": "Migration mismatches",
+          "metric": "yeonjae_migration_mismatch_total",
+          "labels": ["reason"]
+        },
+        {
+          "title": "Role assumption failures",
+          "metric": "yeonjae_role_assumption_failures_total",
+          "labels": ["reason"]
+        }
+      ]
+    }
+  ],
+  "slos": [
+    {
+      "$comment": "Starting targets for an environment that does not exist yet. They are written down so a deployment has something to calibrate AGAINST, and they are not claims about observed behaviour.",
+      "name": "API availability",
+      "objective": "99.0% of /v1 requests succeed",
+      "window": "30d",
+      "metric": "yeonjae_http_requests_total",
+      "status": "uncalibrated"
+    },
+    {
+      "name": "API latency",
+      "objective": "p95 read latency under 1s",
+      "window": "30d",
+      "metric": "yeonjae_http_request_duration_seconds",
+      "status": "uncalibrated"
+    },
+    {
+      "name": "Accounting truthfulness",
+      "objective": "no settlement books an unknown cost as zero",
+      "window": "always",
+      "metric": "yeonjae_unknown_cost_settlements_total",
+      "status": "enforced_by_construction"
+    },
+    {
+      "name": "Recovery readiness",
+      "objective": "a restore drill succeeds at least every 30 days",
+      "window": "30d",
+      "metric": "yeonjae_restore_outcomes_total",
+      "status": "local_only"
+    }
+  ]
+}

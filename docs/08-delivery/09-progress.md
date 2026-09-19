@@ -8,9 +8,9 @@ Everything else in `docs/` describes design; only this file claims what exists a
 | Item | Value |
 | --- | --- |
 | Project | Yeonjae Studio — English manuscripts in the Korean serialized-webnovel tradition |
-| Phase | **Checkpoint 7 — complete and merged upstream** via [PR #10](https://github.com/jsisiwb/New/pull/10) at `59d62752f31261a0c86921603993f37992194dd2`. **Phase 4 — MVP hardening is ACTIVE and incomplete.** Its credential-free DETERMINISTIC portions are **MERGED UPSTREAM** via [PR #12](https://github.com/jsisiwb/New/pull/12) at `99e6bf5ccf962c2283589745ccbef7983cb682d6`, and the reviewed 100-set contrast corpus is **MERGED UPSTREAM** via [PR #13](https://github.com/jsisiwb/New/pull/13) at merge commit `4df7d92ff3d1641da0f0f270940aa31d33c7cc89` (parents: the previous upstream base `99e6bf5ccf962c2283589745ccbef7983cb682d6` and the reviewed corpus head `bafc9cc23ce632608f38ed3984ea5c0ccc3b72df`), verified by reading the merge commit's parents directly. Merged: the deterministic halves of B-4-1, B-4-2, B-4-3, B-4-4 and B-4-6, B-4-5's blinded reviewer tooling, and **B-4-5a** (the automated corpus expansion to 100 distinct sets). **Active-request cancellation is implemented for its automated scope in the current continuation** (see the Phase 4 section below). Still **not run** because each needs a paid provider, a deployment environment, repository administration or a human reviewer: the live 20-chapter × five-night validation, the real-provider outage drill, staging/production restore, PITR, live credential rotation, real billing calibration and the bilingual human review. **Neither B-4-1, B-4-2, B-4-5 nor Phase 4 is complete.** Checkpoint 6 merged via upstream PR #9 at `6195700`; Checkpoint 5 via PR #8 at `c8cfb59`; Checkpoints 0–4 in PRs #1–#4 |
-| Default branch | `hoplite/ainos-1ac771f8` in `jsisiwb/New` — the upstream base/default development branch, **now at the reviewed-corpus merge commit `4df7d92ff3d1641da0f0f270940aa31d33c7cc89`** (parents: the previous upstream base `99e6bf5ccf962c2283589745ccbef7983cb682d6` and the reviewed corpus head `bafc9cc23ce632608f38ed3984ea5c0ccc3b72df`). Upstream [PR #13](https://github.com/jsisiwb/New/pull/13) is **merged**; the historical fork staging PR [sigma29web/New#1](https://github.com/sigma29web/New/pull/1) is **closed without being merged**. The base branch `hoplite/ainos-1ac771f8` resolves to the same SHA `4df7d92f…` in all three of `jsisiwb/New` (read-only upstream), `sigma29web/New` (read-only historical fork) and `sigma30web/New` (the current writable fork), verified by reading each remote's ref |
-| Working branch | **Active:** `hoplite/pistiros-8c5d93b0` in the writable fork `sigma30web/New`, open as a **draft staging PR that must not be merged**. It was created at exactly the base SHA `4df7d92ff3d1641da0f0f270940aa31d33c7cc89` — a clean continuation, with nothing recovered or copied from any earlier fork. Markers on this branch: `--active-cancellation-start-4df7d92f` and `--active-cancellation-baseline-4df7d92f`, both at the base SHA, plus the final review marker recorded in the Phase 4 section below. **HISTORICAL PROVENANCE ONLY (never written to from here):** `hoplite/morgantina-64e49616` @ `bafc9cc23ce632608f38ed3984ea5c0ccc3b72df` in `sigma29web/New`, whose head is the second parent of the upstream merge and whose staging PR #1 is closed unmerged, together with its corpus milestone markers; and, earlier still, `hoplite/akraiphia-akraiphnion-258b962b` @ `fecd79ede8142a2485959e688f679c1785a88b82` in `sigma28web/New` with its ten markers, and the forks `sigma23web`–`sigma29web/New`. No published commit was ever rewritten across these continuations, and no unpublished branch from an earlier fork was recovered into this one. Upstream branch protection remains **unavailable/unconfigured**, so the compensating controls stay procedural: fork-only implementation, no base-branch writes, draft staging PRs, green push and PR CI, immutable markers, no force-push, and no merge without explicit authorization |
+| Phase | **Checkpoint 7 — complete and merged upstream** via [PR #10](https://github.com/jsisiwb/New/pull/10) at `59d62752f31261a0c86921603993f37992194dd2`. **Phase 4 — MVP hardening is ACTIVE and incomplete.** Its credential-free DETERMINISTIC portions are **MERGED UPSTREAM** via [PR #12](https://github.com/jsisiwb/New/pull/12) at `99e6bf5ccf962c2283589745ccbef7983cb682d6`, the reviewed 100-set contrast corpus via [PR #13](https://github.com/jsisiwb/New/pull/13) at `4df7d92ff3d1641da0f0f270940aa31d33c7cc89`, and **active-request cancellation (automated scope) via [PR #14](https://github.com/jsisiwb/New/pull/14) at merge commit `30cb62af6fed0ac685fe29d44cae0f471577aab1`** (parents: the previous upstream base `4df7d92ff3d1641da0f0f270940aa31d33c7cc89` and the reviewed cancellation head `b1ea8f2af7dea24868f8d32b73c8f64c841d09a2`), each verified by reading the merge commit's parents directly. Merged: the deterministic halves of B-4-1, B-4-2, B-4-3, B-4-4 and B-4-6, B-4-5's blinded reviewer tooling, **B-4-5a** (the automated corpus expansion to 100 distinct sets) and the automated cancellation scope (propagation through gateway, retry, repair, fallback, workflow/activity and durable-state paths). **Database least-privilege hardening is implemented for its automated scope in the current continuation** (see the Phase 4 section below). Still **not run** because each needs a paid provider, a deployment environment, repository administration or a human reviewer: the live 20-chapter × five-night validation, confirmed remote cancellation and post-cancellation billing reconciliation, the real-provider outage drill, staging/production restore, PITR, live credential rotation, real billing calibration, production vector retrieval and the bilingual human review. **Neither B-4-1, B-4-2, B-4-5 nor Phase 4 is complete.** Checkpoint 6 merged via upstream PR #9 at `6195700`; Checkpoint 5 via PR #8 at `c8cfb59`; Checkpoints 0–4 in PRs #1–#4 |
+| Default branch | `hoplite/ainos-1ac771f8` in `jsisiwb/New` — the upstream base/default development branch, **now at the active-cancellation merge commit `30cb62af6fed0ac685fe29d44cae0f471577aab1`** (parents: the previous upstream base `4df7d92ff3d1641da0f0f270940aa31d33c7cc89` and the reviewed cancellation head `b1ea8f2af7dea24868f8d32b73c8f64c841d09a2`). Upstream [PR #14](https://github.com/jsisiwb/New/pull/14) is **merged**; the historical fork staging PR [sigma30web/New#1](https://github.com/sigma30web/New/pull/1) is **closed without being merged**. The base branch resolves to the same SHA `30cb62af…` in `jsisiwb/New` (read-only upstream) and `sigma31web/New` (the current writable fork), verified by reading each remote's ref |
+| Working branch | **Active:** `hoplite/akragas-7c1f75a8` in the writable fork `sigma31web/New`, open as a **draft staging PR that must not be merged**. It was created at exactly the base SHA `30cb62af6fed0ac685fe29d44cae0f471577aab1` — a clean continuation, with nothing recovered or copied from any earlier fork. Markers on this branch: `--least-privilege-start-30cb62af` and `--least-privilege-baseline-30cb62af`, both at the base SHA, plus the final review marker recorded in the Phase 4 section below. **HISTORICAL PROVENANCE ONLY (never written to from here):** `hoplite/pistiros-8c5d93b0` @ `b1ea8f2af7dea24868f8d32b73c8f64c841d09a2` in `sigma30web/New`, whose head is the second parent of the upstream merge, whose staging PR #1 is closed unmerged, and whose merge marker `--active-cancellation-merged-30cb62af` resolves to the merge commit; earlier still, `hoplite/morgantina-64e49616` @ `bafc9cc23ce632608f38ed3984ea5c0ccc3b72df` in `sigma29web/New`, `hoplite/akraiphia-akraiphnion-258b962b` @ `fecd79ede8142a2485959e688f679c1785a88b82` in `sigma28web/New`, and the forks `sigma23web`–`sigma30web/New`. No published commit was ever rewritten across these continuations, and no unpublished branch from an earlier fork was recovered into this one. Upstream branch protection remains **unavailable/unconfigured**, so the compensating controls stay procedural: fork-only implementation, no base-branch writes, draft staging PRs, green push and PR CI, immutable markers, no force-push, and no merge without explicit authorization |
 | Application code | pnpm workspace: `packages/prose`, `packages/domain`, `packages/db` (migrations 0001–0004 — 0004 adds `workflow_id`/idempotency/`pins` on `jobs`, `workflow_artifacts` content-addressed store, `dependency_edges`; `canon.commit_delta`, `canon.rollback_latest`, bitemporal helpers, `retrieval.ts` accepted-only reads, lexical search, summaries, ACS/pack persistence), `packages/canon` (deterministic verifier + acceptance), `packages/narrative` (profile store, composition, Block compiler), `packages/prompts` (25 immutable prompt families v1.0.0, registry, prompt sets), `packages/gateway` (Guard, routing, budget, repair, output-language path, audit; Mock/Replay providers — Replay gains `activity:<id>` binding), `packages/context` (Active Constraint Set compiler, 4 pack templates, query plan, structured fetch, Postgres FTS retriever + vector interface, T0–T3 assembler with ladder, provenance renderer, manifest + pack hash, validation, `buildPack`), `packages/workflows` (Postgres-checkpointed `runStep` runtime, planning/drafting/evaluation/revision/acceptance stages, `produceChapter` core loop with previous-chapter gate before spend, `workflowStatus`, `exportAccepted`; Replay fixture `examples/fixture/ch01`), `apps/cli` (incl. `chapter:produce` / `chapter:status` / `chapter:resume` / `export:accepted` operator surface over the production workflow, replay-only), `apps/api` (Checkpoint 7: Fastify `/v1` operator API — session/API-key authentication, membership-derived authorization, RLS-scoped connections, RFC 9457 problem details, `Idempotency-Key` handling, cursor pagination, security headers, health/readiness, audit log; migration 0006 adds identity, membership, row-level security on every workspace-owned table, API idempotency keys, job control columns, the append-only `job_events` log and the `exports` table; migration 0007 narrows the request-scoped role's grants to least privilege after the audit; migration 0008 adds fenced target leases; migration 0009 adds `canon.assert_lease_fence`, the in-transaction fence assertion that makes fencing atomic with the write it protects (ADR-0048); migration 0010 adds the operator-editable `/v1` write resource families; job control + SSE, accepted-only TXT/DOCX export, the canon correction/retcon/regeneration-preview/rollback HTTP surface, canon/cost/budget inspector reads, structured-log + trace-correlated observability with redaction, the per-process sliding-window rate limiter and the default-deny CORS allowlist are delivered), `apps/worker` (Checkpoint 7: Temporal worker over the proven chapter loop, ADR-0047 — deterministic workflow ids, fenced target leases, versioned prose-free activity contracts, typed retry classification, pause/resume/cancel signals, progress queries, deterministic history replay; replay-only provider routing with no live-call path), `apps/web` (Checkpoint 7: Next.js 16 / React 19 operator application covering all 11 operator work areas over the real `/v1` API, with journey, accessibility and keyboard-path tests) |
 | CI | `planning-validation.yml` (validator) + `ci.yml` (Postgres 16 service; types-fresh, typecheck, lint, format, unit + integration tests, the 120-chapter replay, the chaos drills, the disposable restore drill, the defensive security suite, the deterministic cost suite, the contrast regression, CLI/API/worker/web smoke, web production build, dependency-audit gate, gitleaks) on every push/PR. Each of the five explicit hardening suites is run by its own runner AND verified again from its own durable report (`coverage/chaos-report.json`, `restore-drill-report.json`, `security-report.json`, `cost-report.json`) rather than from `coverage/junit.xml`, which every later vitest invocation overwrites — the defect D-4 repair. `pnpm check` runs the same sequence including all five suites (the defect D-7 repair); gitleaks is the one documented CI-only difference and is **unavailable locally**. **Latest upstream evidence: on the Phase 4 deterministic-integration merge commit `99e6bf5c`, [ci](https://github.com/jsisiwb/New/actions/runs/35205393002) and [planning-validation](https://github.com/jsisiwb/New/actions/runs/35205392869) both succeeded, with secret scanning green.** A PR with zero check runs is unverified, never "green" |
 
@@ -326,6 +326,127 @@ established independently on the writable fork rather than inherited.
 | 6c | Real billing calibration against provider invoices | **not run** — needs live providers and invoices | unchanged |
 | 7a | **Safe cancellation of already-running provider requests** | **done for the automated scope** (evidence below) | fencing prevented a stale commit but could not abort an in-flight provider request |
 | 7b | Confirmed REMOTE cancellation against a real provider API | **not run** — needs paid provider access | a cancelled call's remote state and remote billing may be genuinely unknown, and are recorded as such |
+| 8a | **Database least privilege, RLS, migration-safety and recovery-integrity hardening** | **done for the automated scope** (evidence below) | append-only, immutable and canon-history tables retained request-scoped `UPDATE`/`DELETE`, and every `canon` function was `PUBLIC`-executable |
+| 8b | The same privilege model verified on a deployed cluster | **not run** — no staging or production database exists | unchanged |
+
+### Database least-privilege hardening (Phase 4 item 8a; automated scope complete)
+
+**Status: implemented for the automated scope. This does NOT complete Phase 4.** Continuation tranche
+beginning at the upstream merge commit `30cb62af6fed0ac685fe29d44cae0f471577aab1` (upstream
+[PR #14](https://github.com/jsisiwb/New/pull/14), **merged**; parents
+`4df7d92ff3d1641da0f0f270940aa31d33c7cc89` and the reviewed cancellation head
+`b1ea8f2af7dea24868f8d32b73c8f64c841d09a2`, verified by reading the merge commit directly). The writable
+fork for this tranche is `sigma31web/New`.
+
+**What the audit found.** Migration 0013 repaired `llm_calls`, whose own comment claimed "INSERT/SELECT
+only" while the catalog reported `DELETE, INSERT, SELECT, UPDATE`. A repository-wide audit of the privilege
+model at the base established that this was **structural, not table-specific**: migration 0006 granted DML
+on `ALL TABLES` and only the tables 0007/0013 happened to name were ever narrowed, leaving **48 tables**
+with `UPDATE` or `DELETE` for the request-scoped role — including `audit_log`, `job_events`,
+`workflow_artifacts`, `context_packs`, `active_constraint_sets` and every canon-history table, each of
+which already carries a `BEFORE` trigger refusing that exact command for every caller, and none of which
+has any `UPDATE`/`DELETE` call site in the repository. Two further defects were catalog-level rather than
+per-table: **all 41 `canon` functions were executable by `PUBLIC`** (the default grant was never revoked,
+so `commit_delta`, `rollback_latest`, `quarantine_version` and the lease functions were callable by every
+role in the cluster), and the role held more than `nextval` needs on the append-only `job_events` sequence,
+where `setval` would let a request-scoped connection rewind the stream into collision with existing rows.
+
+**What migration `0014_append_only_least_privilege` does** (forward-only; no existing migration edited):
+revokes `UPDATE`/`DELETE` on the five append-only and immutable tables; revokes `DELETE` on
+`canon_commits` and 13 canon-history tables while **retaining** the `UPDATE` that `canon.commit_delta`
+requires because it is `SECURITY INVOKER`; revokes `EXECUTE` from `PUBLIC` across the `canon` schema after
+granting the two policy helpers explicitly; narrows the sequence to `USAGE`; and sets narrow default
+privileges for future sequences and future `canon` functions. Rationale, the retained-privilege
+justifications and the rejected alternatives are in **ADR-0050**.
+
+**Evidence (all local PostgreSQL 16.14 plus fork CI; no live provider call, no credentials).** 22 new
+deterministic tests: `packages/db/src/append-only-privileges.integration.test.ts` (14) and
+`packages/db/src/migration-replay.integration.test.ts` (4), plus 4 new restore-drill assertions. Every
+negative case was **PERMITTED at the base**, and each checks two independent layers — the grant is gone at
+a real non-owner, `NOBYPASSRLS` request-scoped connection, the trigger still refuses the same command on
+the owner connection, and the legitimate write path still succeeds. Mutation-checked: removing two
+revocations failed 4 tests, removing the `PUBLIC` `EXECUTE` revocation failed 1, and running the restore
+behaviour checks as the owner instead of the application role failed 4. No mutation was committed.
+
+The restore drill now treats the security model as a restore invariant, **23 → 40 invariants**: table,
+sequence and function `EXECUTE` grants, function security modes and `search_path`, full policy
+definitions, per-table `RLS`/`FORCE RLS`, trigger definitions with enabled state, table owners and schema
+privileges compared source-to-target, plus role attributes, no `PUBLIC` `EXECUTE`, and re-executed
+behaviour in the restored database (the legitimate audit append succeeds; direct `audit_log`
+update/delete, `job_events` update, `canon_commits` delete and `llm_calls` cost rewrite are each refused).
+It remains a **local logical dump/restore** — not staging, not production, not PITR.
+
+Migration properties are asserted rather than assumed: idempotent across a second and third run compared
+by a security fingerprint, a clean install converging on exactly the fingerprint an upgrade produces (and
+the upgrade **changing** it, so a no-op migration fails), the existing content-hash protection rejecting a
+modified historical migration, and a mid-file failure rolling back completely so no partial grant
+survives.
+
+**Cancellation and accounting compatibility (ADR-0049) is unaffected in substance and stronger in depth:**
+a cancelled attempt still records its audit row by `INSERT`, `usage_status`/`billing_status = unknown`
+remain first-class and representable, and the false-zero cost rewrite that 0012's trigger refuses is now
+also unreachable by privilege. The full deterministic suite passes unchanged, which is the evidence that
+every revoked privilege genuinely had no caller.
+
+### Credential-free operational hardening (Phase 4 items 9a–9d; automated scope)
+
+**Status: implemented for the automated scope. This does NOT complete Phase 4.** Continuation of the same
+working branch, after the least-privilege tranche at `bfb3e6e`. Four controls that the system *presented*
+as protections, and which were per-process or absent, now exist where they have to.
+
+**9a — shared rate and concurrency limiting (migration 0015).** `apps/api/src/rate-limit.ts` is an
+in-memory sliding window and says so in its own header: "N instances permit roughly N× the configured
+rate". It also constrained nothing on the side that costs money — the gateway had no limiter in front of
+the provider at all. Admission is now a fixed-window counter in Postgres (per provider, model, workspace
+and operation class; request count and estimated tokens; explicit burst), and concurrency is an expiring
+**lease** rather than a counter, because a decrement is lost forever when the holder is killed while a
+deadline is not. Time is a parameter, so all 17 tests drive window rollover, boundaries and expiry
+deterministically with no `sleep()`; the two-connection race for the final slot asserts exactly one
+winner. **Not yet wired into the worker's production path** — that is listed as open in
+`12-remaining-external-work.md`.
+
+**9b — shared budget enforcement (migration 0015).** `MemoryBudget` was the only `BudgetLedger`: spend in
+a `Map`, reset on restart, invisible to other processes, so two workers each believed they owned the whole
+budget. `SharedBudget` enforces it in the database, with reservations that expire (a dead worker must not
+strand budget forever), idempotent settlement (at-least-once activity delivery must not double-charge),
+and **unknown cost that is never zero** — an unreported final cost keeps the reservation's estimate and
+is marked `cost_known = false`, the same rule migration 0012 enforces for `llm_calls`. A settled row is
+immutable by trigger and holds no `DELETE` grant. 16 tests; the decisive one is two workers each asking
+for 60% of the budget, where exactly one succeeds — a case that cannot be expressed against
+`MemoryBudget`, because there was nowhere for the second worker to look.
+
+**9c — deterministic provider simulator and HTTP adapter.** `MockProvider` and `ReplayProvider` are
+in-process: they return values, so every test using them proves things about gateway *logic* while
+skipping the part that breaks in production. `SyntheticProviderService` is a real `node:http` server with
+18 scenarios (reset before headers, truncated body, 429 with `Retry-After`, 5xx, malformed JSON, wrong
+shape, oversized body, delayed headers/body, late success, remote-cancel acknowledged/unsupported), and
+`HttpProvider` is the adapter shape a real provider would use. 27 tests over a loopback socket.
+**This is SIMULATED provider validation and is labelled as such everywhere** — it is not evidence about
+any live provider's behaviour, billing or remote cancellation, and no request leaves loopback.
+
+**9d — readiness that fails for the reasons that matter.** `/ready` ran `SELECT 1`, which passes against a
+database that is behind on migrations, ahead of the build, carrying a tampered ledger, or whose
+application role has been granted `BYPASSRLS` — the last of which voids every tenant-isolation guarantee
+in ADR-0050 while the app looks healthy. All four now refuse readiness. Liveness is deliberately
+untouched, and optional dependencies report **degraded** rather than failing, so an orchestrator does not
+kill healthy processes during a provider outage. 14 tests.
+
+**Defects found and fixed by the new tests, not by inspection:**
+
+| ID | Severity | Defect |
+| --- | --- | --- |
+| O-1 | HIGH | migration 0015's new `canon` functions were born `PUBLIC`-executable, reintroducing the exact defect 0014 repaired: 0014's `ALTER DEFAULT PRIVILEGES` does not cover functions the migration's own owner creates in the same schema. Caught by the existing `append-only-privileges` and restore-drill guards |
+| O-2 | MEDIUM | `window_start` as a `RETURNS TABLE` column shadowed the table column of the same name, making every reference inside `canon.rate_limit_admit` ambiguous. Renamed `window_started_at` |
+| O-3 | MEDIUM | a microtask spin (`while (…) await Promise.resolve()`) used to wait for a request to reach the simulator **wedged the event loop** and hung the suite: draining microtasks never yields to the I/O phase. Replaced with `waitForRequests`/`waitForClientAbort`, which yield via `setImmediate` |
+| O-4 | LOW | the migration-replay suite pinned the newest migration's filename and a hard-coded chain length, so it failed the moment 0015 landed. Both are now read from disk |
+
+**Scope limits recorded rather than glossed.** A container topology (Dockerfiles, Compose profiles, a
+one-command local stack) was **not** built: neither `docker` nor `podman` exists in this workspace, so any
+manifest written here would be unvalidated YAML presented as working infrastructure. The remaining
+credential-free work — wiring the new controls into the worker path, local deterministic embeddings and
+versioned vector retrieval, the name thesaurus, multi-process tests, metrics for the new signals, and
+deployment/alert templates — is listed openly in `docs/08-delivery/12-remaining-external-work.md`
+under "Not blocked, and honestly still open". **Phase 4 remains incomplete.**
 
 ### Active-request cancellation (Phase 4 item 7a; automated scope complete)
 
@@ -877,3 +998,153 @@ quality, and synthetic contrast sets are not a substitute for the bilingual revi
 | 2026-09-14 | Repair: `createManuscriptVersion` numbers versions across `manuscript_versions ∪ quarantine_versions` so a quarantined draft and its replacement never share a `version_no` (found while seeding the fixture; regression test in `canon.integration.test.ts`) | `packages/db/src/repo.ts` |
 | 2026-09-15 | Chapter-production repair: previous-chapter gate runs before any model spend or canon write (T17); Replay `activity:<id>` binding with prompt-hash priority (no live calls); canon identity stays global, failure-paths tests isolate per-test via DB reset (T19/T19b); T11 extract-variant fixture carries schema-valid plan-frame + future-dated items | ADR-0046, `packages/workflows`, `examples/fixture/ch01/replay.ch01.json` |
 | 2026-09-15 | CLI chapter surface over the production workflow (no parallel orchestration): `chapter:produce` runs/resumes `produceChapter` with replay-only routing and deterministic workflow ids, `chapter:status` reads the persisted job, `chapter:resume` re-runs the same workflow id explicitly, `export:accepted` exports accepted text only; nonzero exit on failure; T19b proves two live projects cannot share deterministic fixture UUIDs | `apps/cli`, `apps/cli/src/chapter.test.ts` |
+
+### Credential-free automated readiness — shared enforcement, retrieval and operational templates
+
+**Status: implemented for the scope below. This does NOT complete Phase 4, the MVP or production
+readiness.** Continuation branch `hoplite/selinous-f82579f4` in the writable fork `sigma32web/New`, imported at exactly
+`5768f79a8a6314805ef5330eb275b8ad91928ea5` from `sigma31web/New:hoplite/akragas-7c1f75a8` with its
+13-commit ancestry preserved (13 ahead, 0 behind the base `30cb62af6fed0ac685fe29d44cae0f471577aab1`;
+26 files, +5,306/−20). Markers: `--automated-readiness-handoff-5768f79` and
+`--automated-readiness-baseline-5768f79` at the imported SHA.
+
+**Baseline at the imported SHA reproduced exactly before any edit:** 76 test files, 1,168 tests, 0
+skipped; 40 restore invariants; 49 chaos scenarios; 120-chapter replay with final canon version 122; 100
+contrast sets × 5 variants × 4 dimensions = 2,000 evaluations, 700/700 agreement, 0 false positives, 0
+false negatives, threshold 0.60, calibration `uncalibrated`, corpus hash
+`sha256:4c9ef2225e0e72ada566401183c453b19b7383c29cfac1a5617958aaeadbb97b`. Dependency audit 0 blocking;
+`git diff --check` clean; no file changed during the baseline.
+
+**Shared enforcement is now active in the worker's production path.** The limiter and `SharedBudget`
+existed but nothing used them: the gateway the worker constructed held a `MemoryBudget`, whose `Map` of
+spend is not a budget once the worker runs twice. `PgProviderAdmission` adapts migration 0015's
+primitives, taking the releasable concurrency lease BEFORE the un-undoable window counter so a refusal
+unwinds exactly. The gateway admits **per attempt, inside the loop**, so retry, bounded repair and route
+fallback each earn their own admission for the model they will actually pay; a refusal is not a provider
+fault and is never rerouted or repaired. The worker defaults to shared enforcement, reaches
+`MemoryBudget` only through an explicit `YEONJAE_ENFORCEMENT_MODE=isolated_test`, fails closed on an
+unrecognized value, and asserts the 0015 functions exist before accepting work.
+
+**Multi-process tests now exist**, which required fixing the inherited shared-database reset race.
+`resetDatabase` drops the `public` and `canon` schemas, so two contexts on one database delete each
+other's tables; the fix is a database per context created from the same migrations, not sleeps or retries.
+Children are real OS processes reporting JSON state lines, so "the holder died" means it died, and the
+parent synchronises on printed state rather than elapsed time.
+
+**Retrieval.** A deterministic local embedder (hashed lexical features, fixed 256 dimensions, SHA-256
+bucketing, L2-normalized with rounded components). It captures lexical overlap, **not meaning**: fixture
+recall measured against it is evidence the pipeline works and says nothing about production embedding
+quality. Migration 0016 completes the embedding-set lifecycle 0003 left as a registry, with activation as
+a locked function rather than two UPDATEs, so a reader never observes two active sets or none, and an
+empty or incomplete set is refused. Migration 0017 adds the project-scoped thesaurus, where expansion is
+a retrieval aid and never a canon assertion. Hybrid ranking normalizes each side against its own best hit
+before weighting, with a total order so ties are deterministic, and degrades to lexical-only rather than
+failing.
+
+**Operational templates exist and are statically validated — never built, never run, never deployed.**
+No container runtime and no monitoring system are available here. 32 tests check the compose service
+graph, dependency conditions, published ports, credential defaults, Dockerfile stages, a secret scan, and
+every alert and dashboard metric and label against the observability registry.
+
+**Defects found and fixed in this tranche**
+
+| ID | Severity | Defect |
+| --- | --- | --- |
+| R-1 | HIGH | the metrics registry filtered labels with `isLoggableKey`, the LOG allowlist, which permits any `*_id` suffix — so a tenant identifier could become a metric label on the deliberately unauthenticated `/metrics` endpoint, an unbounded-cardinality and disclosure defect at once. Metric labels now use their own strict allowlist and values outside a bounded shape collapse to `other` |
+| R-2 | HIGH | the gateway recognized a budget refusal by CLASS (`GatewayError`), so a `SharedBudget` rejection — which raises `BudgetExhaustedError` from `@yeonjae/db` and cannot import that class without inverting the package dependency — produced **no `budget_blocked` audit row**. Now matched on `code` |
+| R-3 | MEDIUM | `canon.gc_eligible_embedding_sets` filtered the rollback target BEFORE computing recency, renumbering the remaining rows and hiding genuinely eligible sets behind the keep window |
+| R-4 | MEDIUM | the thesaurus normalized surfaces with `toNfcText`, which returns a `{ text, codePoints }` record rather than a string, corrupting every stored surface to `"[object Object]"` |
+| R-5 | LOW | the Dockerfile healthcheck probed `/readyz` against a server that serves `/ready`; every container would have reported unhealthy. Caught by the static validator written alongside it |
+| R-6 | LOW | alert runbook links pointed at sections that did not exist; 24 response sections were added and the validator now fails on a missing anchor |
+
+**Known flake, recorded rather than hidden.** `lease-fence.integration.test.ts` → "serializes a
+concurrent steal against an open fenced transaction" failed once in a combined
+`packages/db packages/prose packages/context` run and passed on every isolated and repeated run
+(3/3 isolated, 323/323 for `packages/db`, 403/403 on the combined retry). It is inherited, timing-sensitive
+and not caused by this tranche's changes; it does not block deterministic continuation and is **not**
+worked around by weakening the assertion.
+
+**Scope limits, stated rather than glossed.** The following were credential-free and **were not done** in
+that tranche: worker liveness/readiness endpoints and an explicit API drain phase; operator `/v1` and CLI
+surfaces for the new subsystems (the controls existed as tested library functions); **metric call sites**
+for the new counters (names, labels, cardinality guards and template validation existed, but the gateway,
+worker and retrieval paths did not increment them); the remaining deterministic workflow surfaces; local
+recovery completion beyond the current 40 invariants; credential-rotation simulation; bounded performance
+smoke tests; and the single end-to-end automated-readiness scenario. Several of these were completed
+afterwards — see the continuation section below. **Phase 4 remains incomplete**, no live provider call was
+made, and no real credential was used.
+
+### Credential-free automated-readiness continuation (`sigma33web/New`, 2026-09-18)
+
+Continued from the inherited head `f65a4c9c42ff6b970b1889cc574613ef3e9d43d1` (22 commits ahead of the
+base `30cb62af6fed0ac685fe29d44cae0f471577aab1`, 0 behind), preserved commit-for-commit on the branch
+`hoplite/hattusa-72f3a6b9` in the writable fork `sigma33web/New`. No inherited commit was amended,
+cherry-picked, squashed or rewritten, and nothing was pushed to any other repository.
+
+**The inherited head was not CI-validated.** sigma32's exact-head run failed at `pnpm format:check`, and
+because formatting runs before the test stages, *every test stage was skipped*. The cause was a single
+file: commit `32b12ae` widened the `@yeonjae/domain` import in `packages/db/src/repo.ts` past the
+configured print width without reformatting. The repair re-wraps that import list and contains no
+semantic change. With formatting fixed, the complete suite was run against local PostgreSQL 16.14 for the
+first time at this head: **89 files, 1,360 tests, all passing, none skipped.**
+
+Completed in this continuation:
+
+| Work | Evidence |
+| --- | --- |
+| Operator API and CLI surfaces | `/v1/operator/*` routes and `operator:*` CLI commands over ONE shared service layer (`packages/db/src/operator-diagnostics.ts`): limiter counters, live lease occupancy, shared-budget state, embedding-set completeness, GC candidates, thesaurus listing with ambiguity diagnostics, bounded retrieval diagnostics. 27 tests (16 API, 11 CLI) covering authentication, tenant isolation, scope-from-auth, bounding, malformed input and redaction |
+| Versioned backup manifests | `packages/db/src/backup-manifest.ts`; 15 tests covering the valid case, checksum mismatch, truncation, missing/malformed manifests, unsupported versions, schema newer than the application, schema below the floor, wrong manifest/artifact association, missing artifact, absent secret-exclusion assertion, credential refusal, repeatability and numeric ordering |
+| Local WAL/PITR rehearsal | `pnpm drill:pitr`. **PASSED** on local PostgreSQL 16.14: base backup, recorded recovery target, restore-and-replay, pre-target rows present (2), post-target rows absent (0), all processes and files cleaned up. Capability-gated with a structured `CAPABILITY_BLOCKED` result where no server can be started |
+| Bounded performance smoke tests | `pnpm test:perf-smoke`, separate from the correctness suites; 8 tests over 10 measured paths, monotonic timing, warm-up, broad ceilings, registry-growth and output-size bounds, environment metadata recorded to `coverage/perf-smoke-report.json` |
+
+**This is local evidence only.** The PITR rehearsal proves the WAL/recovery-target configuration works on
+this PostgreSQL build; it says nothing about staging or production recovery, off-site backup, retention or
+object-store durability. The performance figures are bounded smoke results on a shared 2-CPU sandbox and
+are **not** production throughput, latency or capacity.
+
+**Still open and credential-free** (carried in `12-remaining-external-work.md`): an explicit API drain
+phase with telemetry flush and a degraded-versus-unavailable distinction; operator *mutations* (embedding-
+set activation/rollback, thesaurus create/deactivate/reactivate, job cancellation) as audited owner-gated
+endpoints — the current operator surface is read-only; the remaining deterministic workflow surfaces from
+`02-backlog.md`; and the single wired end-to-end automated-readiness scenario.
+
+### Final credential-free tranche (`sigma33web/New`, continued 2026-09-18)
+
+Continued on the same branch `hoplite/hattusa-72f3a6b9` from `8d35a9889d7ceff97e44d210ed82df1de09caf0e`,
+whose CI and planning validation were both green. The four items listed immediately above are now
+implemented, with one deliberate exception recorded below.
+
+| Work | Evidence |
+| --- | --- |
+| **API graceful drain** | The API runs the same `LifecycleCoordinator` as the worker: readiness fails synchronously the instant drain begins (before any dependency probe), liveness keeps succeeding and reports `stopping`, new work is refused with a 503 `SERVICE_DRAINING` problem document and a `retry-after`, in-flight requests finish inside a bounded deadline, the deadline produces a distinct exit code, telemetry flush is bounded independently, and a close that throws never strands the other resources. **15 real-process tests** spawn the actual API and signal it, synchronising on JSON state lines and HTTP probes with no sleeps. |
+| **Operator mutations** | Embedding-set activation and rollback, and thesaurus create/deactivate/reactivate, on `/v1/operator/*` and the CLI over one shared service layer. Owner-gated, audited on **both** success and refusal, idempotent, with cross-tenant and cross-project targets answered as 404. **18 API + 16 CLI tests.** |
+| **End-to-end readiness scenario** | One ordered **20-stage** run through real boundaries (`pnpm test:e2e-readiness`), failing if any stage is skipped. Recorded: 17 migrations with hashes, 25 provider attempts, 43 artifacts all content-hashed, 74 vectors, incomplete-set activation refused, budget settled at 4,200 millicents with a released reservation leaving 0 outstanding, 0 live leases, second tenant observing 0 projects / 0 calls / 0 aliases, backup manifest verified, FORCE RLS intact and PUBLIC EXECUTE revoked. |
+
+**Defects found and fixed in this tranche** (all found by the new tests, none pre-existing in production
+paths): operator mutation body and path validation ran **before** authentication, so an anonymous caller
+with a malformed body received 422 and learned the request schema; the thesaurus route re-resolved the
+auth scope **inside** its transaction, taking a second pooled connection while holding one and
+deadlocking a small pool into a 500; and migration 0017's rule that every alias kind except `terminology`
+names an entity was unenforced at the boundary, surfacing as a 500 constraint violation instead of a
+stable `ALIAS_INVALID`.
+
+**Workflow-surface reconciliation.** All 35 deterministic lifecycle capability areas were reconciled
+against the code. Every one is implemented and tested; no genuine gap remained to implement. Two backlog
+notes were **stale rather than open**: B-4-9's "limiter and budget not yet wired into the worker's
+production path" was completed by `45e6b2e`, and the outbox entry is satisfied by the append-only
+`job_events` log plus SSE rather than a separate outbox table.
+
+**Deliberately not done, with reason.** Job cancellation is NOT duplicated as an `/v1/operator/*`
+mutation. It is already implemented, owner-gated and tested through `POST /v1/jobs/:jobAction` and the
+durable control path; a second route onto the same state machine would mean two authorization surfaces
+for one action, which is a security regression rather than a feature.
+
+**Inherited lease-fence flake:** still not reproduced. It passed every observation in this tranche as
+well. Nothing was weakened, skipped or slept around; it remains recorded rather than hidden.
+
+**CI no-skip guard, installed.** The workflow change this tranche proposed could not be pushed by the
+agent's GitHub App, which lacks the `workflows` permission. A maintainer applied it as
+`6ab8b286f4526461756450eb6a72185e5f577a5f`, identical to the proposed patch, and all five guard steps
+executed and passed in CI: the explicit `pnpm test:e2e-readiness` run, its forty-stage durable-report
+check, the explicit `pnpm test:perf-smoke` run, the junit guards that the six product suites ran, and the
+zero-skipped-tests gate. The guards are verified as *running*, not merely present.

@@ -1,0 +1,16 @@
+# Keep build context small and keep secrets out of it.
+#
+# `.env` is listed FIRST and deliberately: a developer's real provider keys must never reach an image
+# layer, and an ignore file is the only thing standing between a local `.env` and a published image.
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/.next
+**/coverage
+.git
+.github
+.hoplite
+**/*.log
+**/.DS_Store

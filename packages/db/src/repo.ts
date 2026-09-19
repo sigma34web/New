@@ -6,7 +6,13 @@ import { type Client, type Pool, rethrowCanon, withTransaction } from './client.
 import { withFencedTransaction, type LeaseClaim } from './leases.js';
 import { measure, toNfcText } from '@yeonjae/prose';
 import { createHash } from 'node:crypto';
-import { type StoryClock } from '@yeonjae/domain';
+import {
+  METRIC,
+  METRIC_HELP,
+  type Metrics,
+  safeLabelValue,
+  type StoryClock,
+} from '@yeonjae/domain';
 
 type Queryable = Pool | Client;
 
@@ -383,7 +389,11 @@ export interface CommitResult {
  * placement is the guarantee: the check and the commit are one atomic unit, so unlike a pre-step ownership
  * read there is no interval in which the lease can be stolen while the commit still succeeds.
  */
-export async function commitDelta(pool: Pool, input: CommitInput): Promise<CommitResult> {
+export async function commitDelta(
+  pool: Pool,
+  input: CommitInput,
+  metrics?: Metrics,
+): Promise<CommitResult> {
   return withFencedTransaction(pool, input.lease, async (client) => {
     const r = await client
       .query<{ commit_delta: CommitResult }>(
@@ -404,6 +414,11 @@ export async function commitDelta(pool: Pool, input: CommitInput): Promise<Commi
       .catch(rethrowCanon);
     const out = r.rows[0]?.commit_delta;
     if (!out) throw new Error('commit_delta returned no row');
+    // Counted at the single atomic boundary every caller goes through, so the metric cannot miss a
+    // commit made by a path somebody forgets to instrument. `source` is a closed set in the schema.
+    metrics?.increment(METRIC.canonCommits, METRIC_HELP[METRIC.canonCommits] ?? '', {
+      source: safeLabelValue(input.source),
+    });
     return out;
   });
 }

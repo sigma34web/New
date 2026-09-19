@@ -6,7 +6,15 @@
  */
 import { createHash } from 'node:crypto';
 import { checkOutputLanguage, toNfcText } from '@yeonjae/prose';
-import { uuidv7, validatorFor, type Uuid } from '@yeonjae/domain';
+import {
+  METRIC,
+  METRIC_HELP,
+  type Metrics,
+  safeLabelValue,
+  uuidv7,
+  validatorFor,
+  type Uuid,
+} from '@yeonjae/domain';
 import {
   cancellationErrorOf,
   composeCancellation,
@@ -50,9 +58,33 @@ export type RoutingTable = Readonly<Record<ModelClass, readonly RouteEntry[]>>;
 export interface BudgetLedger {
   /** Reserve `cents`; throw GatewayError('BUDGET_EXHAUSTED') when the scope cannot afford it. */
   reserve(
-    scope: { projectId: string; jobId: string },
+    scope: { projectId: string; jobId: string; workspaceId?: string | undefined },
     cents: number,
   ): Promise<{ release(actualCents: number): Promise<void> }>;
+}
+
+/**
+ * Rate admission in front of a paid attempt.
+ *
+ * Declared here as a structural interface, satisfied by `PgProviderAdmission` in `@yeonjae/db`, so the
+ * gateway depends on the SHAPE of shared enforcement and not on the database package. `grant.release()`
+ * frees the concurrency lease; the window count is deliberately not refundable.
+ */
+export interface ProviderAdmissionControl {
+  admit(req: {
+    workspaceId?: string | undefined;
+    provider: string;
+    modelId: string;
+    requestId: string;
+    tokens?: number | undefined;
+    signal?: AbortSignal | undefined;
+  }): Promise<{
+    readonly admitted: boolean;
+    readonly reason: string;
+    readonly retryAfterMs: number;
+    readonly waitedMs: number;
+    release(): Promise<void>;
+  }>;
 }
 
 export interface AuditRecord {
@@ -182,6 +214,18 @@ export interface GatewayOptions {
   readonly routing: RoutingTable;
   readonly budget: BudgetLedger;
   readonly audit: AuditStore;
+  /**
+   * Shared rate/concurrency admission. Optional in the TYPE so the many single-process test gateways
+   * stay valid, but the worker's production path supplies it and refuses to start without it.
+   */
+  readonly admission?: ProviderAdmissionControl | undefined;
+  /**
+   * Where to record operational counters.
+   *
+   * Optional so every existing single-purpose test gateway stays valid, and passed in rather than
+   * module-global so a test can assert on exactly the emissions of the call it made.
+   */
+  readonly metrics?: Metrics | undefined;
   readonly guardContext?: GuardContext | undefined;
   /** Minimum English confidence for manuscript roles (policy.output_language.min_english_confidence). */
   readonly minEnglishConfidence?: number | undefined;
@@ -226,8 +270,50 @@ function costCents(route: RouteEntry, usage: ProviderResponse['usage']): number 
   );
 }
 
+/**
+ * Is this error a budget refusal, whichever ledger raised it?
+ *
+ * Structural on `code` so both `GatewayError('BUDGET_EXHAUSTED')` and `@yeonjae/db`'s
+ * `BudgetExhaustedError` are recognized without a cross-package import.
+ */
+export function isBudgetExhausted(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === 'BUDGET_EXHAUSTED'
+  );
+}
+
 export class Gateway {
   constructor(private readonly opts: GatewayOptions) {}
+
+  /**
+   * Record one counter, with labels bounded at the call site.
+   *
+   * Every label value passes through `safeLabelValue`, so a value that is not a closed enum collapses
+   * to `other` rather than becoming a new time series. The registry enforces the same rule, but doing
+   * it here as well makes the intent visible where the label is chosen: nothing derived from a request,
+   * a tenant, a prompt or an exception message may become a label.
+   */
+  private count(name: string, labels: Readonly<Record<string, string>> = {}): void {
+    const metrics = this.opts.metrics;
+    if (!metrics) return;
+    const safe: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels)) safe[k] = safeLabelValue(v);
+    metrics.increment(name, METRIC_HELP[name] ?? '', safe);
+  }
+
+  private observe(
+    name: string,
+    seconds: number,
+    labels: Readonly<Record<string, string>> = {},
+  ): void {
+    const metrics = this.opts.metrics;
+    if (!metrics) return;
+    const safe: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels)) safe[k] = safeLabelValue(v);
+    metrics.observe(name, METRIC_HELP[name] ?? '', seconds, safe);
+  }
 
   private routesFor(cls: ModelClass, excludeFamily?: string): RouteEntry[] {
     const routes = [...this.opts.routing[cls]].sort((a, b) => a.priority - b.priority);
@@ -308,6 +394,17 @@ export class Gateway {
      */
     if (cancelled()) {
       const err = cancellationErrorOf(handle);
+      /**
+       * Cancelled BEFORE the budget reservation, so this path never reaches `settleCancelled`.
+       *
+       * It still has to emit, or the cheapest and most desirable cancellation -- the one that costs
+       * nothing because no provider was contacted -- would be the one the metrics never showed. There
+       * is no settlement counter here precisely because there was no reservation to settle.
+       */
+      this.count(METRIC.cancellationRequests, { source: err.reason });
+      this.count(METRIC.cancellationObservations, { phase: 'before_first_attempt' });
+      this.count(METRIC.remoteCancellation, { state: err.remoteCancellation });
+      this.count(METRIC.unknownCost, { scope_kind: 'job' });
       await this.opts.audit.append(
         this.cancelledRecord(req, guard, primary, params, {
           error: err,
@@ -328,9 +425,26 @@ export class Gateway {
       cached: 0,
     });
     const reservation = await this.opts.budget
-      .reserve({ projectId: req.projectId, jobId: req.jobId }, predicted)
+      // The workspace ceiling is passed through so a shared ledger can enforce it; `MemoryBudget`
+      // ignores it, which is why the previous single-scope call site kept working.
+      .reserve(
+        { projectId: req.projectId, jobId: req.jobId, workspaceId: req.workspaceId },
+        predicted,
+      )
       .catch(async (err: unknown) => {
-        if (err instanceof GatewayError && err.code === 'BUDGET_EXHAUSTED') {
+        /**
+         * Recognize a budget refusal by its CODE, not by its class.
+         *
+         * `MemoryBudget` raises `GatewayError('BUDGET_EXHAUSTED')`, but the shared ledger lives in
+         * `@yeonjae/db` and raises its own `BudgetExhaustedError` carrying the same code — it cannot
+         * import this class without inverting the package dependency. Matching on the class alone meant
+         * a shared-budget refusal produced no `budget_blocked` audit row, which is the one durable
+         * record an operator needs to tell "refused by policy" from "crashed".
+         */
+        if (isBudgetExhausted(err)) {
+          this.count(METRIC.budgetReservations, { scope_kind: 'job', outcome: 'refused' });
+          // The same refusal the audit row records as `budget_blocked`, so metric and audit agree.
+          this.count(METRIC.budgetBlocks, { scope_kind: 'job' });
           await this.opts.audit.append(
             this.record(
               req,
@@ -343,12 +457,17 @@ export class Gateway {
               'stop',
               false,
               0,
-              { class: 'BUDGET_EXHAUSTED', message: err.message },
+              {
+                class: 'BUDGET_EXHAUSTED',
+                message: err instanceof Error ? err.message : String(err),
+              },
             ),
           );
         }
         throw err;
       });
+
+    this.count(METRIC.budgetReservations, { scope_kind: 'job', outcome: 'reserved' });
 
     let attempt = 0;
     let repairAttempts = 0;
@@ -391,6 +510,20 @@ export class Gateway {
       // Released at ACTUAL cost, never at the prediction: a cancelled call must not leave phantom spend
       // reserved against the project, and must not refund spend that genuinely happened.
       await reservation.release(actualCost);
+      this.count(METRIC.cancellationRequests, { source: cancelled.reason });
+      this.count(METRIC.cancellationObservations, {
+        phase: beforeFirstAttempt ? 'before_first_attempt' : 'in_flight',
+      });
+      // The getter, not the raw field: it defaults to `unknown` rather than to a claim.
+      this.count(METRIC.remoteCancellation, { state: cancelled.remoteCancellation });
+      // Truthful accounting: a cancelled call whose usage the provider never reported settles as
+      // UNKNOWN, never as a comfortable zero (ADR-0049). The counter says the same thing.
+      if (cancelled.detail.usage === undefined) {
+        this.count(METRIC.unknownCost, { scope_kind: 'job' });
+        this.count(METRIC.budgetSettlements, { scope_kind: 'job', outcome: 'unknown' });
+      } else {
+        this.count(METRIC.budgetSettlements, { scope_kind: 'job', outcome: 'known' });
+      }
       throw cancelled;
     };
 
@@ -414,6 +547,84 @@ export class Gateway {
           // same fact (no provider was contacted yet) stated in terms of the durable evidence.
           await settleCancelled(cancellationErrorOf(handle), route, attemptRecords.length === 0);
         attempt++;
+        /**
+         * SHARED RATE ADMISSION, immediately before the paid call and inside the attempt loop.
+         *
+         * Placing it here rather than once per `call()` is what makes retry, bounded repair and route
+         * fallback each require their OWN admission: all three are expressed as another iteration of
+         * this loop, so every provider attempt passes through exactly one admission decision. The
+         * request id carries the attempt number and the route, so a redelivered attempt re-reads its own
+         * decision (idempotent) while a genuine retry earns a fresh one.
+         */
+        let grant: Awaited<ReturnType<ProviderAdmissionControl['admit']>> | undefined;
+        if (this.opts.admission) {
+          grant = await this.opts.admission.admit({
+            workspaceId: req.workspaceId,
+            provider: route.provider,
+            modelId: route.modelId,
+            requestId: `${req.idempotencyKey}:${String(attempt)}:${route.modelId}`,
+            tokens: req.pack.tokenEstimate + params.max_tokens,
+            signal: handle.signal,
+          });
+          this.observe(METRIC.rateWaitSeconds, grant.waitedMs / 1000, {
+            operation_class: 'provider_call',
+          });
+          this.count(METRIC.rateAdmission, {
+            operation_class: 'provider_call',
+            reason: grant.reason,
+            outcome: grant.admitted ? 'admitted' : 'refused',
+          });
+          if (grant.admitted) {
+            this.count(METRIC.concurrencyAcquired, { provider: route.provider });
+          } else if (grant.reason === 'concurrency_exhausted') {
+            this.count(METRIC.concurrencySaturated, { provider: route.provider });
+          }
+          if (!grant.admitted) {
+            /**
+             * Refused. This is not a provider fault, so it must not be rerouted to a second paid model
+             * and must not be repaired — doing either would turn one refused call into more spend. The
+             * reservation is released at actual cost by the outer `catch`, and the audit row records the
+             * refusal with no usage, because no request was issued.
+             */
+            const rateError = new GatewayError(
+              'RATE_LIMITED',
+              `shared rate limit refused ${route.provider}/${route.modelId} (${grant.reason}); retry after ${String(grant.retryAfterMs)} ms`,
+            );
+            attemptRecords.push({
+              attempt,
+              model_id: route.modelId,
+              provider: route.provider,
+              outcome: 'failed',
+              failure_class: 'rate_limited',
+              error_class: 'RATE_LIMITED',
+              cost_cents: 0,
+              usage: { input: 0, output: 0, cached: 0 },
+              latency_ms: 0,
+            });
+            await this.opts.audit.append(
+              this.record(
+                req,
+                guard,
+                route,
+                params,
+                undefined,
+                actualCost,
+                'failed',
+                'error',
+                false,
+                repairAttempts,
+                { class: 'RATE_LIMITED', message: rateError.message },
+                fallbackFrom,
+                undefined,
+                undefined,
+                attempt,
+                attemptRecords,
+              ),
+            );
+            await reservation.release(actualCost);
+            throw rateError;
+          }
+        }
         let res: ProviderResponse;
         try {
           /**
@@ -447,6 +658,10 @@ export class Gateway {
               // usage is preserved truthfully, because tokens the provider reported were really produced.
               // A late FAILURE must not overwrite the authoritative cancellation.
               responseDiscarded = true;
+              // A provider answered AFTER an authoritative cancellation. Counted where the discard
+              // actually happens, so the metric cannot disagree with the audit record.
+              this.count(METRIC.lateResponses, { outcome: outcome.ok ? 'success' : 'failure' });
+              this.count(METRIC.discardedArtifacts, { reason: 'late_response' });
               if (outcome.ok) discardedUsage = outcome.value.usage;
             },
           );
@@ -494,10 +709,30 @@ export class Gateway {
             usage: { input: 0, output: 0, cached: 0 },
             latency_ms: 0,
           });
+          this.count(METRIC.providerAttempts, {
+            provider: route.provider,
+            model_class: req.modelClass,
+            status: 'failed',
+          });
           if (!isRetryable(failureClass)) break;
+          // Only a retryable class reaches here, which is exactly when a further attempt is
+          // authorized -- so this is the honest place to count a retry and a route fallback.
+          this.count(METRIC.retries, { reason: failureClass });
+          this.count(METRIC.fallbacks, { reason: failureClass });
           fallbackFrom = route.modelId;
           routeIdx++;
           continue;
+        } finally {
+          /**
+           * The concurrency lease covers the provider request and nothing more.
+           *
+           * Releasing in a `finally` on the attempt itself is what makes success, provider failure,
+           * timeout and cancellation all give the slot back — and `release()` is idempotent and safe
+           * after expiry, so a lease reclaimed by its deadline while this attempt was still running
+           * cannot be double-released. A process that dies here strands nothing permanently: the
+           * lease's own deadline reclaims it.
+           */
+          if (grant) await grant.release();
         }
         const attemptCost = costCents(route, res.usage);
         actualCost += attemptCost;
@@ -543,6 +778,7 @@ export class Gateway {
           }
           if (!schemaValid) {
             repairAttempts++;
+            this.count(METRIC.repairs, { reason: 'schema_invalid' });
             lastError = { class: 'SCHEMA_INVALID', message: 'structured output did not validate' };
             noteAttempt('failed', 'SCHEMA_INVALID');
             if (repairAttempts <= 2) continue; // bounded repair = regenerate on the same route
@@ -604,6 +840,12 @@ export class Gateway {
         );
         await this.opts.audit.append(record);
         await reservation.release(actualCost);
+        this.count(METRIC.providerAttempts, {
+          provider: route.provider,
+          model_class: req.modelClass,
+          status: 'succeeded',
+        });
+        this.count(METRIC.budgetSettlements, { scope_kind: 'job', outcome: 'known' });
         return this.fromAudit(record, false);
       }
       // exhausted

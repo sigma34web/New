@@ -60,5 +60,21 @@ export default tseslint.config(
     },
     rules: { 'no-console': 'off' },
   },
+  {
+    // Child-process fixtures for the multi-process tests. They are separate Node entry points by
+    // design — the coordination they exercise needs a process that can genuinely die — so they run
+    // under Node's globals and report their state on stdout.
+    files: ['packages/*/*-child.mjs', 'apps/*/*-child.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+        setTimeout: 'readonly',
+        setInterval: 'readonly',
+      },
+    },
+    rules: { 'no-console': 'off', '@typescript-eslint/no-empty-function': 'off' },
+  },
   prettier,
 );

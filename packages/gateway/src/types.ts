@@ -109,6 +109,7 @@ export class GatewayError extends Error {
       | 'OUTPUT_LANGUAGE_UNSUPPORTED'
       | 'OUTPUT_LANGUAGE_FAILED'
       | 'BUDGET_EXHAUSTED'
+      | 'RATE_LIMITED'
       | 'PROVIDER_FAILED'
       | 'SCHEMA_INVALID'
       | 'TRUNCATED',

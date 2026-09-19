@@ -16,6 +16,8 @@ jobs:
   build-test:
     name: Typecheck, lint, format, generated types, tests (with Postgres 16)
     runs-on: ubuntu-latest
+    # A hard ceiling: a hung suite must fail the build rather than occupy a runner indefinitely.
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -52,6 +54,37 @@ jobs:
           CI: 'true'
       - name: Integration tests actually ran (DATABASE_URL present)
         run: test -n "$DATABASE_URL"
+      - name: Credential-free product suites actually ran (dependency status, preview, quality, export, batch)
+        # Same reasoning as every guard above. These five suites are the only evidence that a required
+        # dependency failing readiness, a preview never touching accepted content, a reproducible export
+        # hash, and a batch refusing a cross-tenant item all hold. A silent skip would turn each of those
+        # into an unverified claim.
+        run: |
+          grep -q "a REQUIRED component that is not serving fails readiness" coverage/junit.xml || {
+            echo "::error::dependency-status tests did not run"; exit 1; }
+          grep -q "creates a preview and leaves the accepted version byte-identical" coverage/junit.xml || {
+            echo "::error::regeneration-preview tests did not run"; exit 1; }
+          grep -q "never treats an apostrophe as an unmatched bracket" coverage/junit.xml || {
+            echo "::error::typography tests did not run"; exit 1; }
+          grep -q "never claims that a real platform accepted the content" coverage/junit.xml || {
+            echo "::error::offline platform-format tests did not run"; exit 1; }
+          grep -q "two preparations of identical state produce identical logical hashes" coverage/junit.xml || {
+            echo "::error::deterministic export tests did not run"; exit 1; }
+          grep -q "refuses a CROSS-TENANT item without failing the whole batch" coverage/junit.xml || {
+            echo "::error::batch-operation tests did not run"; exit 1; }
+      - name: No test was skipped
+        # A skipped test is an unverified claim wearing a green check. Integration suites skip visibly
+        # when DATABASE_URL is absent — which is exactly the accident this gate exists to catch, because
+        # CI always provides one.
+        run: |
+          node -e '
+            const { readFileSync } = require("node:fs");
+            const xml = readFileSync("coverage/junit.xml", "utf8");
+            const skipped = [...xml.matchAll(/skipped="(\d+)"/g)].reduce((n, m) => n + Number(m[1]), 0);
+            if (skipped > 0) { console.error(`::error::${skipped} test(s) were skipped`); process.exit(1); }
+            const tests = [...xml.matchAll(/ tests="(\d+)"/g)].reduce((n, m) => n + Number(m[1]), 0);
+            console.log(`no tests skipped (${tests} reported in the final suite run)`);
+          '
       - name: Durable orchestration tests actually ran (worker + Temporal test server)
         # The worker suite runs against Temporal's locally downloaded time-skipping test server, so a
         # silent skip would hide the only proof of restart/replay/duplicate-start behaviour.
@@ -195,6 +228,51 @@ jobs:
           '
       - name: Deterministic contrast regression (no credentials, no provider calls)
         run: pnpm validate:contrast
+      - name: Extended end-to-end readiness and product scenario, with its no-skip guard
+        # `pnpm test:e2e-readiness` is the ONE ordered run through real boundaries: it migrates a clean
+        # database, comes up healthy, produces a chapter through the real workflow, and then exercises
+        # every credential-free product surface — dependency status through degraded and unavailable and
+        # back, a regeneration preview that must not touch accepted content, typography and offline
+        # platform-format checks, a reproducible export, a bounded batch with partial failure and an
+        # eligible-only retry, tenant isolation, accounting, drain and leak checks.
+        #
+        # It refuses to pass if a declared stage was skipped, which is what stops the suite from passing
+        # by doing less. Deterministic replay only: no credentials and no paid provider.
+        run: pnpm test:e2e-readiness
+        env:
+          CI: 'true'
+      - name: Extended readiness scenario evidence (read from its own durable report)
+        # Its own report rather than coverage/junit.xml, for the reason the chaos guard documents: every
+        # vitest invocation rewrites junit.xml, so a grep there would only see the last suite that ran.
+        run: |
+          node -e '
+            const r = require("./coverage/readiness-scenario-report.json");
+            const stages = r.stages ?? [];
+            const required = [
+              "dependencies_healthy", "optional_dependency_degraded",
+              "required_dependency_unavailable", "readiness_failed_correctly",
+              "dependency_recovered", "preview_created", "accepted_content_unchanged",
+              "preview_resolved", "typography_checked", "platform_format_checked",
+              "export_prepared", "export_manifest_verified", "export_reproduced",
+              "batch_completed", "batch_partial_failure", "batch_retry_eligible_only",
+              "product_tenant_isolation_proved", "product_accounting_verified",
+              "product_drained", "no_resource_leaked",
+            ];
+            const done = new Set(stages.map((s) => s.name));
+            const missing = required.filter((s) => !done.has(s));
+            if (missing.length > 0) { console.error(`::error::readiness scenario skipped stages: ${missing.join(", ")}`); process.exit(1); }
+            if (stages.some((s) => s.ok !== true)) { console.error("::error::a readiness scenario stage did not pass"); process.exit(1); }
+            if (stages.length < 40) { console.error(`::error::readiness scenario reported ${stages.length} stages, expected >= 40`); process.exit(1); }
+            if (r.zero_live_calls !== true || r.zero_real_credentials !== true) {
+              console.error("::error::the readiness scenario does not declare zero live calls and zero real credentials"); process.exit(1); }
+            console.log(`readiness + product scenario: ${stages.length} stages passed`);
+          '
+      - name: Bounded performance smoke tests, explicit run
+        # Separate from the correctness suites on purpose: a perf regression must be visible as its own
+        # failure rather than as a slow test somewhere in the main run.
+        run: pnpm test:perf-smoke
+        env:
+          CI: 'true'
       - name: CLI smoke against the migrated database
         run: |
           pnpm --silent cli db:migrate
@@ -250,6 +328,7 @@ jobs:
   secrets:
     name: Secret scanning (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:

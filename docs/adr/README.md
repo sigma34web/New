@@ -51,6 +51,7 @@
 | [0047](0047-temporal-adapter-over-checkpointed-steps.md) | Temporal orchestrates the proven chapter loop as one durable activity over its Postgres checkpoints, not as decomposed activities |
 | [0048](0048-atomic-lease-fencing.md) | Lease fencing is asserted inside the transaction it protects (raising `LEASE_LOST`), closing the time-of-check/time-of-use gap a pre-step ownership read leaves open |
 | [0049](0049-active-request-cancellation.md) | Durable cancellation aborts the in-flight provider request (composed signal plus a race), is never retried/repaired/rerouted, and records remote-cancellation status and post-abort billing as `unknown` rather than as a zero |
+| [0050](0050-database-least-privilege.md) | The application role holds only the privileges its write paths use: append-only and immutable tables are `INSERT`/`SELECT` only, canon history keeps the `UPDATE` `commit_delta` needs but loses `DELETE`, `EXECUTE` is never granted to `PUBLIC`, and every guarantee is enforced at both the trigger and the grant layer |
 
 New ADRs: copy `0000-adr-template.md`, take the next number, link it here, and update the traceability
 matrix in the same change.

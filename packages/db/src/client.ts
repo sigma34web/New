@@ -40,6 +40,29 @@ export async function withTransaction<T>(
   }
 }
 
+/**
+ * Run `fn` in a transaction on an ALREADY-SCOPED client.
+ *
+ * `withTransaction` takes a pool and checks out its own connection, which is wrong for anything
+ * running inside `withWorkspace`: a fresh connection has none of the caller's RLS scope, so the work
+ * would silently execute unscoped. This variant reuses the caller's connection and therefore its
+ * scope, which is what every request-scoped multi-statement write needs.
+ */
+export async function inClientTransaction<T>(
+  client: Client,
+  fn: (client: Client) => Promise<T>,
+): Promise<T> {
+  await client.query('BEGIN');
+  try {
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  }
+}
+
 /** Postgres raises canon errors as P0001 with the code in HINT; surface them as typed errors. */
 export class CanonDbError extends Error {
   constructor(

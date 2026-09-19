@@ -772,7 +772,185 @@ async function verifyRestored(ctx: VerifyContext): Promise<DrillInvariant[]> {
     }
   }
 
+  await verifySecurityInvariants(ctx, check);
+
   return out;
+}
+
+/**
+ * Security metadata and security BEHAVIOUR after restore (ADR-0050).
+ *
+ * The checks above prove the rows, the schema, the policy count and that RLS still isolates. None of them
+ * would notice a restore that reproduced every row while losing a grant, re-enabling a disabled trigger,
+ * dropping `FORCE RLS` on one table, changing a function's security mode or handing `EXECUTE` back to
+ * PUBLIC. A restored database that has lost its privilege model has silently lost the security model, and
+ * "the dump contained the DDL" is not the same claim as "the restored database refuses the write".
+ *
+ * So this compares the security metadata SOURCE-TO-TARGET (rather than against hard-coded numbers, which
+ * would rot with every migration) and then re-executes both a legitimate application operation and a
+ * forbidden direct mutation against the restored database, as the real non-owner role.
+ */
+async function verifySecurityInvariants(
+  ctx: VerifyContext,
+  check: (id: string, ok: boolean, observed: string) => void,
+): Promise<void> {
+  // 1. Table grants, sequence grants and function EXECUTE grants, compared as sorted text.
+  const grantQueries: readonly (readonly [string, string])[] = [
+    [
+      'table_grants_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT DISTINCT table_name || ':' || privilege_type AS t
+           FROM information_schema.role_table_grants
+          WHERE grantee = 'yeonjae_app' AND table_schema = 'public') s`,
+    ],
+    [
+      'sequence_grants_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT c.relname
+                || ':U=' || has_sequence_privilege('yeonjae_app', c.oid, 'USAGE')::text
+                || ':S=' || has_sequence_privilege('yeonjae_app', c.oid, 'SELECT')::text
+                || ':W=' || has_sequence_privilege('yeonjae_app', c.oid, 'UPDATE')::text AS t
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relkind = 'S' AND n.nspname = 'public') s`,
+    ],
+    [
+      'function_execute_grants_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT p.proname
+                || ':app=' || has_function_privilege('yeonjae_app', p.oid, 'EXECUTE')::text
+                || ':public=' || has_function_privilege('public', p.oid, 'EXECUTE')::text AS t
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'canon') s`,
+    ],
+    [
+      'function_security_and_search_path_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT p.proname || ':secdef=' || p.prosecdef::text
+                || ':cfg=' || coalesce(array_to_string(p.proconfig, ','), 'none') AS t
+           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'canon') s`,
+    ],
+    [
+      'policy_definitions_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT tablename || ':' || policyname || ':' || cmd
+                || ':' || coalesce(qual, '-') || ':' || coalesce(with_check, '-') AS t
+           FROM pg_policies WHERE schemaname = 'public') s`,
+    ],
+    [
+      'rls_and_force_rls_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT c.relname || ':rls=' || c.relrowsecurity::text
+                || ':force=' || c.relforcerowsecurity::text AS t
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r') s`,
+    ],
+    [
+      'trigger_definitions_and_enabled_state_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT c.relname || ':' || tg.tgname || ':' || tg.tgenabled::text AS t
+           FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE NOT tg.tgisinternal AND n.nspname = 'public') s`,
+    ],
+    [
+      'table_owners_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT tablename || ':' || tableowner AS t
+           FROM pg_tables WHERE schemaname = 'public') s`,
+    ],
+    [
+      'schema_privileges_preserved',
+      `SELECT coalesce(string_agg(t, ';' ORDER BY t), '') FROM (
+         SELECT n.nspname
+                || ':appU=' || has_schema_privilege('yeonjae_app', n.nspname, 'USAGE')::text
+                || ':appC=' || has_schema_privilege('yeonjae_app', n.nspname, 'CREATE')::text AS t
+           FROM pg_namespace n WHERE n.nspname IN ('public', 'canon')) s`,
+    ],
+  ];
+  for (const [id, sql] of grantQueries) {
+    const a = await scalar<string>(ctx.source, sql);
+    const b = await scalar<string>(ctx.target, sql);
+    // A non-empty value matters as much as equality: two empty strings would compare equal if the query
+    // silently matched nothing, which would make this check vacuous.
+    check(id, a === b && a.length > 0, a === b ? 'identical' : 'DIFFERS');
+  }
+
+  // 2. Role attributes. These are cluster-level, so they are read once and asserted absolutely: a
+  //    superuser or BYPASSRLS application role would void every isolation result above.
+  const role = await ctx.target.query<{
+    rolsuper: boolean;
+    rolbypassrls: boolean;
+    rolcreatedb: boolean;
+    rolcreaterole: boolean;
+  }>(
+    `SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole
+       FROM pg_roles WHERE rolname = 'yeonjae_app'`,
+  );
+  const attrs = role.rows[0];
+  check(
+    'app_role_remains_unprivileged',
+    attrs !== undefined &&
+      !attrs.rolsuper &&
+      !attrs.rolbypassrls &&
+      !attrs.rolcreatedb &&
+      !attrs.rolcreaterole,
+    attrs === undefined ? 'role_missing' : `super=${String(attrs.rolsuper)}`,
+  );
+
+  // 3. No canon function may be PUBLIC-executable after restore (ADR-0050 decision 5).
+  const publicExec = await scalarNumber(
+    ctx.target,
+    `SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'canon' AND has_function_privilege('public', p.oid, 'EXECUTE')`,
+  );
+  check('no_public_execute_after_restore', publicExec === 0, `${String(publicExec)}_public_exec`);
+
+  // 4. BEHAVIOUR, as the real non-owner role: the legitimate append still works and the forbidden direct
+  //    mutations are still refused. Metadata can look right while the restored database behaves wrongly.
+  const [wsA] = ctx.workspaces;
+  if (wsA === undefined) return;
+  const projectId = await scalar<string | null>(
+    ctx.target,
+    'SELECT id::text FROM projects WHERE workspace_id = $1 ORDER BY id LIMIT 1',
+    [wsA],
+  );
+  if (projectId === null) return;
+
+  const attempt = async (sql: string, params: readonly unknown[] = []): Promise<boolean> => {
+    const client = await ctx.target.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT set_config($1, $2, true)', ['app.workspace_id', wsA]);
+      await client.query('SET LOCAL ROLE yeonjae_app');
+      await client.query(sql, params as unknown[]);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      // Always rolled back: a permitted forbidden write must not persist into the rest of the drill.
+      await client.query('ROLLBACK').catch(() => undefined);
+      client.release();
+    }
+  };
+
+  const appended = await attempt(
+    `INSERT INTO audit_log (workspace_id, project_id, action, target_kind, target_id)
+     VALUES ($1, $2, 'restore.drill.allowed', 'project', $3)`,
+    [wsA, projectId, projectId],
+  );
+  check('restored_legitimate_audit_append_succeeds', appended, appended ? 'permitted' : 'REFUSED');
+
+  for (const [id, sql] of [
+    ['restored_audit_update_refused', `UPDATE audit_log SET action = 'forged'`],
+    ['restored_audit_delete_refused', 'DELETE FROM audit_log'],
+    ['restored_job_event_update_refused', `UPDATE job_events SET kind = 'forged'`],
+    ['restored_canon_commit_delete_refused', 'DELETE FROM canon_commits'],
+    ['restored_llm_call_cost_rewrite_refused', 'UPDATE llm_calls SET cost_cents = 0'],
+  ] as const) {
+    const permitted = await attempt(sql);
+    check(id, !permitted, permitted ? 'PERMITTED' : 'refused');
+  }
 }
 
 export interface RunDrillOptions {
@@ -805,6 +983,23 @@ export async function runRestoreDrill(options: RunDrillOptions): Promise<Restore
   const targetDb = drillDatabaseName(drillId, 'restored');
   const created: string[] = [];
   const admin = createPool({ connectionString: options.adminUrl, max: 2 });
+  /**
+   * Attach an error listener to every drill pool.
+   *
+   * `DROP DATABASE ... WITH (FORCE)` in the cleanup below terminates any backend still attached to the
+   * database being dropped. `pg` emits that as an `error` event on the POOL, and a pool with no `error`
+   * listener turns it into an unhandled exception — which is how a drill whose 83 assertions all passed
+   * still failed the runner with "terminating connection due to administrator command".
+   *
+   * The connection is genuinely gone and the drill is finished with it, so the correct handling is to
+   * absorb the event rather than to crash. It is attached at creation, before any query, because an
+   * error that arrives during teardown must already have a listener waiting.
+   */
+  const absorbPoolErrors = (pool: Pool): Pool => {
+    pool.on('error', () => undefined);
+    return pool;
+  };
+  absorbPoolErrors(admin);
   let source: Pool | undefined;
   let target: Pool | undefined;
   const dumpDir = mkdtempSync(join(tmpdir(), 'yeonjae-drill-'));
@@ -820,8 +1015,8 @@ export async function runRestoreDrill(options: RunDrillOptions): Promise<Restore
 
     const sourceUrl = urlForDatabase(options.adminUrl, sourceDb);
     const targetUrl = urlForDatabase(options.adminUrl, targetDb);
-    source = createPool({ connectionString: sourceUrl, max: 4 });
-    target = createPool({ connectionString: targetUrl, max: 4 });
+    source = absorbPoolErrors(createPool({ connectionString: sourceUrl, max: 4 }));
+    target = absorbPoolErrors(createPool({ connectionString: targetUrl, max: 4 }));
 
     const applied = await migrate(source);
     const seeded = await seedDrillData(source);
