@@ -33,6 +33,8 @@
     "generate:contrast-recordings": "tsx packages/eval/src/generate.ts",
     "cli": "tsx apps/cli/src/main.ts",
     "synthetic:provider": "tsx tools/run-synthetic-provider.ts",
+    "provider:genspark": "python3 tools/genspark_provider_bridge.py",
+    "provider:genspark:check": "curl -fsS http://127.0.0.1:8091/health",
     "check": "pnpm run check:types-fresh && pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm run test && pnpm run test:replay-120 && pnpm run test:chaos && pnpm run drill:restore && pnpm run test:security && pnpm run test:costs && pnpm run build:web && pnpm run validate:planning && pnpm run validate:contrast",
     "build:web": "pnpm --filter @yeonjae/web build"
   },

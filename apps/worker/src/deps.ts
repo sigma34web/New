@@ -16,18 +16,26 @@
  * than silently degrading — a silent fallback to in-memory protection is exactly the bug this guards.
  */
 import { readFileSync } from 'node:fs';
-import { Gateway, MemoryBudget, ReplayProvider, type RoutingTable } from '@yeonjae/gateway';
+import {
+  DEFAULT_GENSPARK_BRIDGE_URL,
+  Gateway,
+  GensparkProvider,
+  MemoryBudget,
+  ReplayProvider,
+  type RoutingTable,
+} from '@yeonjae/gateway';
 import { Metrics } from '@yeonjae/domain';
 import { ArtifactLlmOutputStore, type ChapterProductionDeps } from '@yeonjae/workflows';
 import { PgAuditStore, PgProviderAdmission, SharedBudget, type Pool } from '@yeonjae/db';
 
-export type ProviderMode = 'replay';
+export type ProviderMode = 'replay' | 'genspark';
 
 export function providerModeFromEnv(env: NodeJS.ProcessEnv = process.env): ProviderMode {
   const mode = env.YEONJAE_PROVIDER_MODE;
   if (mode === 'replay') return 'replay';
+  if (mode === 'genspark') return 'genspark';
   throw new Error(
-    "YEONJAE_PROVIDER_MODE must be set to 'replay'; the worker refuses to start without an explicit " +
+    "YEONJAE_PROVIDER_MODE must be set to 'replay' or 'genspark'; the worker refuses to start without an explicit " +
       'provider mode so a misconfigured deployment cannot issue paid calls',
   );
 }
@@ -105,11 +113,34 @@ export function replayRouting(): RoutingTable {
   };
 }
 
+export function gensparkRouting(): RoutingTable {
+  const route = (modelId: string, family: string) => [
+    {
+      modelId,
+      provider: 'genspark',
+      priority: 1,
+      family,
+      priceInPerMTokCents: 0,
+      priceOutPerMTokCents: 0,
+      maxContextTokens: 128_000,
+      supportsJsonSchema: true,
+    },
+  ];
+  return {
+    R: route('gemini-3.8-flash', 'google'),
+    P: route('gemini-3.8-flash', 'google'),
+    M: route('gemini-3.8-flash', 'google'),
+    C: route('gemini-3.8-flash', 'google'),
+    E: [],
+  };
+}
+
 /**
  * Build the production dependency factory.
  *
- * The replay recording is read from `YEONJAE_REPLAY_FILE`. It is a required input in this mode: a replay
- * provider with no recording would fail every call, and failing at startup names the real problem.
+ * The replay recording is read from `YEONJAE_REPLAY_FILE` when in replay mode. It is a required input in
+ * this mode: a replay provider with no recording would fail every call, and failing at startup names
+ * the real problem. In genspark mode, calls are dispatched to the local Genspark bridge service.
  *
  * Every gateway this factory builds carries shared enforcement unless the process was explicitly started
  * in `isolated_test` mode. `holder` identifies this process on the concurrency leases it takes, which is
@@ -127,19 +158,29 @@ export function productionDeps(
     readonly metrics?: Metrics | undefined;
   } = {},
 ): (input: { workspaceId: string; projectId: string }) => ChapterProductionDeps {
-  providerModeFromEnv();
+  const mode = providerModeFromEnv();
   const enforcement = opts.enforcement ?? enforcementModeFromEnv();
   const replayFile = process.env.YEONJAE_REPLAY_FILE;
-  if (!replayFile)
+  if (mode === 'replay' && !replayFile)
     throw new Error('YEONJAE_REPLAY_FILE must name a recording when YEONJAE_PROVIDER_MODE=replay');
-  const recording = JSON.parse(readFileSync(replayFile, 'utf8')) as Record<string, unknown>;
+  const recording =
+    mode === 'replay' && replayFile
+      ? (JSON.parse(readFileSync(replayFile, 'utf8')) as Record<string, unknown>)
+      : {};
   const budgetCents = Number(process.env.YEONJAE_BUDGET_CENTS ?? '100000');
   const holder = `worker:${process.env.YEONJAE_WORKER_ID ?? String(process.pid)}`;
   const maxWaitMs = Number(process.env.YEONJAE_RATE_MAX_WAIT_MS ?? '0');
   const metrics = opts.metrics ?? new Metrics();
 
   return ({ workspaceId, projectId }) => {
-    const provider = new ReplayProvider(recording as never);
+    const provider =
+      mode === 'genspark'
+        ? new GensparkProvider({
+            baseUrl: process.env.YEONJAE_GENSPARK_URL ?? DEFAULT_GENSPARK_BRIDGE_URL,
+          })
+        : new ReplayProvider(recording as never);
+    const providerName = mode === 'genspark' ? 'genspark' : 'replay';
+    const routing = mode === 'genspark' ? gensparkRouting() : replayRouting();
     const audit = new PgAuditStore(
       pool,
       { workspaceId, projectId },
@@ -149,8 +190,8 @@ export function productionDeps(
       return {
         pool,
         gateway: new Gateway({
-          providers: new Map([['replay', provider]]),
-          routing: replayRouting(),
+          providers: new Map([[providerName, provider]]),
+          routing,
           budget: new MemoryBudget(budgetCents),
           metrics,
           audit,
@@ -160,8 +201,8 @@ export function productionDeps(
     return {
       pool,
       gateway: new Gateway({
-        providers: new Map([['replay', provider]]),
-        routing: replayRouting(),
+        providers: new Map([[providerName, provider]]),
+        routing,
         // The shared ledger, so two workers spending against one project see one another's spend.
         budget: new SharedBudget(pool),
         admission: new PgProviderAdmission(pool, { holder, maxWaitMs, metrics }),
