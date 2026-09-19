@@ -1141,3 +1141,10 @@ for one action, which is a security regression rather than a feature.
 
 **Inherited lease-fence flake:** still not reproduced. It passed every observation in this tranche as
 well. Nothing was weakened, skipped or slept around; it remains recorded rather than hidden.
+
+**CI no-skip guard, installed.** The workflow change this tranche proposed could not be pushed by the
+agent's GitHub App, which lacks the `workflows` permission. A maintainer applied it as
+`6ab8b286f4526461756450eb6a72185e5f577a5f`, identical to the proposed patch, and all five guard steps
+executed and passed in CI: the explicit `pnpm test:e2e-readiness` run, its forty-stage durable-report
+check, the explicit `pnpm test:perf-smoke` run, the junit guards that the six product suites ran, and the
+zero-skipped-tests gate. The guards are verified as *running*, not merely present.

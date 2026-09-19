@@ -94,8 +94,18 @@ Still open and credential-free:
   deliberately NOT duplicated under `/v1/operator/*`, because a second route onto the same state machine
   would be two authorization surfaces for one action.
 
-## Blocked on a repository permission
+## Needed a repository permission — resolved
 
-| Item | Why it cannot be done here | What is already prepared |
-| --- | --- | --- |
-| The CI no-skip guards for the product suites | the GitHub App pushing this branch lacks the `workflows` permission, so a commit touching `.github/workflows/` is rejected by the remote | the exact patch is in the pull request body, verbatim and ready to apply. It adds an explicit `pnpm test:e2e-readiness` run with a forty-stage durable-report check, an explicit `pnpm test:perf-smoke` run, junit guards that the six new product suites actually ran, a zero-skipped-tests gate and hard job timeouts. It removes and weakens nothing. **A maintainer with the `workflows` permission must apply it; until then the guards are NOT installed.** |
+The CI no-skip guards for the product suites were blocked, not missing. The GitHub App pushing the branch
+lacks the `workflows` permission, so its commit touching `.github/workflows/` was rejected by the remote;
+only that commit was reverted, and the exact patch was carried in the pull request body instead.
+
+A maintainer applied it as `6ab8b286f4526461756450eb6a72185e5f577a5f`, byte-for-byte identical to the
+proposed patch (79 insertions, no deletions, so no existing check was removed or weakened). All five new
+guard steps then **executed and passed** in real CI: the explicit `pnpm test:e2e-readiness` run, its
+forty-stage durable-report check, the explicit `pnpm test:perf-smoke` run, the junit guards that the six
+product suites actually ran, and the zero-skipped-tests gate.
+
+**Note for future agent tranches:** a change under `.github/workflows/` cannot be pushed by this app.
+Propose the patch in the pull request body and mark it for maintainer action rather than attempting the
+push as part of a larger commit, because the rejection fails the whole push.
